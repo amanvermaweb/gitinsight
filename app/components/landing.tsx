@@ -4,12 +4,11 @@ import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import {
-  API_KEY_STORAGE_KEY,
   DEFAULT_USERNAME,
   LANDING_QUICK_PROFILES,
   sectionTransition,
-} from "@/lib/gitinsight/constants";
-import { isValidGitHubUsername, normalizeUsername } from "@/lib/gitinsight/utils";
+} from "@/lib/constants";
+import { isValidGitHubUsername, normalizeUsername } from "@/lib/utils";
 import {
   AppShell,
   GitInsightMark,
@@ -17,42 +16,27 @@ import {
   SurfaceLabel,
   ThemeToggle,
   usePersistedTheme,
-} from "./gitinsight-primitives";
-import { GitInsightLandingForm } from "./gitinsight-landing-form";
-import { readSessionStorageValue } from "./gitinsight-storage";
+} from "./primitives";
+import { GitInsightLandingForm } from "./landing-form";
 
 export function GitInsightLanding() {
   const router = useRouter();
   const [theme, setTheme] = usePersistedTheme();
   const [username, setUsername] = useState(DEFAULT_USERNAME);
-  const [apiKey, setApiKey] = useState(() =>
-    readSessionStorageValue(API_KEY_STORAGE_KEY),
-  );
-  const [showApiKey, setShowApiKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const nextUsername = normalizeUsername(username) || DEFAULT_USERNAME;
-    const nextApiKey = apiKey.trim();
 
     if (!isValidGitHubUsername(nextUsername)) {
       setError("Enter a valid GitHub username before starting the analysis.");
       return;
     }
 
-    if (!nextApiKey) {
-      setError(
-        "Enter your API key. GitInsight keeps it in this browser session and does not place it in the URL.",
-      );
-      return;
-    }
-
-    window.sessionStorage.setItem(API_KEY_STORAGE_KEY, nextApiKey);
     setError(null);
-
     startTransition(() => {
       router.push(`/analyze/${encodeURIComponent(nextUsername)}`);
     });
@@ -60,25 +44,22 @@ export function GitInsightLanding() {
 
   return (
     <AppShell theme={theme}>
-      <main className="relative mx-auto flex min-h-screen w-full max-w-[1240px] flex-col px-4 pb-10 pt-4 sm:px-6 lg:px-8">
+      <main className="relative mx-auto flex min-h-screen w-full max-w-310 flex-col px-4 pb-10 pt-4 sm:px-6 lg:px-8">
         <header className="sticky top-4 z-40">
-          <div className="flex items-center justify-between gap-4 rounded-[28px] border border-white/8 bg-[color:var(--nav)] px-4 py-3 shadow-[0_16px_40px_rgba(0,0,0,0.22)] backdrop-blur-2xl sm:px-5">
+          <div className="flex items-center justify-between gap-4 rounded-[28px] border border-white/8 bg-(--nav) px-4 py-3 shadow-[0_16px_40px_rgba(0,0,0,0.22)] backdrop-blur-2xl sm:px-5">
             <div className="flex items-center gap-3">
               <GitInsightMark />
               <div>
-                <p className="text-sm font-medium uppercase tracking-[0.18em] text-[color:var(--muted)]">
+                <p className="text-sm font-medium uppercase tracking-[0.18em] text-(--muted)">
                   GitInsight
                 </p>
-                <p className="text-base font-semibold tracking-[-0.03em] text-[color:var(--foreground)]">
+                <p className="text-base font-semibold tracking-[-0.03em] text-(--foreground)">
                   AI GitHub Portfolio Analyzer
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
-              <div className="hidden rounded-full border border-white/8 bg-white/6 px-3 py-2 font-mono text-[0.72rem] uppercase tracking-[0.22em] text-[color:var(--muted)] sm:block">
-                Session-scoped API key
-              </div>
               <ThemeToggle theme={theme} onChange={setTheme} />
             </div>
           </div>
@@ -99,25 +80,21 @@ export function GitInsightLanding() {
                     <SurfaceLabel>Developer portfolio intelligence</SurfaceLabel>
                   </div>
                   <div className="space-y-4">
-                    <h1 className="mx-auto max-w-3xl text-5xl font-semibold leading-[0.92] tracking-[-0.07em] text-[color:var(--foreground)] sm:text-6xl md:text-7xl">
+                    <h1 className="mx-auto max-w-3xl text-5xl font-semibold leading-[0.92] tracking-[-0.07em] text-(--foreground) sm:text-6xl md:text-7xl">
                       Understand your GitHub portfolio.
                     </h1>
-                    <p className="mx-auto max-w-2xl text-lg leading-8 text-[color:var(--muted-strong)] sm:text-xl">
-                      Enter a GitHub username and your API key to open a dedicated analysis workspace with repository signals, skill mapping, and AI portfolio feedback.
+                    <p className="mx-auto max-w-2xl text-lg leading-8 text-(--muted-strong) sm:text-xl">
+                      Enter a GitHub username to open a dedicated analysis workspace with repository signals, skill mapping, and AI portfolio feedback.
                     </p>
                   </div>
                 </div>
 
                 <GitInsightLandingForm
                   username={username}
-                  apiKey={apiKey}
-                  showApiKey={showApiKey}
                   error={error}
                   isPending={isPending}
                   quickProfiles={LANDING_QUICK_PROFILES}
                   onUsernameChange={setUsername}
-                  onApiKeyChange={setApiKey}
-                  onToggleApiKey={() => setShowApiKey((current) => !current)}
                   onQuickProfile={(profile) => {
                     setUsername(profile);
                     setError(null);

@@ -1,8 +1,19 @@
-import type { AnalyzeApiResponse } from "./types";
+import type { AnalyzeApiResponse } from "@/lib/types";
+
+type ApiErrorPayload = {
+  error?: string;
+};
+
+async function parseJsonPayload<T>(response: Response): Promise<T | null> {
+  return (await response.json().catch(() => null)) as T | null;
+}
+
+function extractErrorMessage(payload: ApiErrorPayload | null, fallback: string) {
+  return payload?.error ?? fallback;
+}
 
 export async function fetchLiveAnalysis(
   username: string,
-  apiKey: string,
   signal: AbortSignal,
 ): Promise<AnalyzeApiResponse> {
   const response = await fetch("/api/analyze", {
@@ -12,20 +23,18 @@ export async function fetchLiveAnalysis(
     },
     body: JSON.stringify({
       username,
-      apiKey,
     }),
     signal,
   });
 
-  const payload = (await response.json().catch(() => null)) as
-    | AnalyzeApiResponse
-    | { error?: string }
-    | null;
+  const payload = await parseJsonPayload<AnalyzeApiResponse | ApiErrorPayload>(response);
 
   if (!response.ok) {
     throw new Error(
-      (payload as { error?: string } | null)?.error ??
+      extractErrorMessage(
+        payload as ApiErrorPayload | null,
         "Unable to fetch live analysis from GitHub.",
+      ),
     );
   }
 

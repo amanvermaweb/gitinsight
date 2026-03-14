@@ -1,74 +1,146 @@
-import { NextRequest, NextResponse } from "next/server";
-import { buildLiveAnalysis, GitHubRequestError } from "@/lib/gitinsight/live-analysis";
-import { isValidGitHubUsername, normalizeUsername } from "@/lib/gitinsight/utils";
+import { NextRequest } from "next/server";
+import { generateAiFeedback, type AiFeedback } from "@/lib/ai-feedback";
+import { getCachedAiFeedback, setCachedAiFeedback } from "@/lib/ai-response-cache";
+import {
+  enforceAnalyzeRequestProtection,
+  getAnalyzeRequestClientIp,
+} from "@/lib/analyze-request-protection";
+import { jsonError, jsonSuccess } from "@/lib/api-response";
+import { buildLiveAnalysis, GitHubRequestError } from "@/lib/live-analysis";
+import type { AnalysisData } from "@/lib/types";
+import { isValidGitHubUsername, normalizeUsername } from "@/lib/utils";
 
 type AnalyzeRequestBody = {
   username?: string;
-  apiKey?: string;
 };
+
+function applyAiFeedback(analysis: AnalysisData, feedback: AiFeedback) {
+  analysis.summary = feedback.summary;
+  analysis.strengths = feedback.strengths;
+  analysis.weaknesses = feedback.weaknesses;
+  analysis.suggestions = feedback.suggestions;
+}
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => null)) as AnalyzeRequestBody | null;
 
+  if (!body || typeof body !== "object") {
+    return jsonError("Invalid request body.", {
+      status: 400,
+    });
+  }
+
   const username = normalizeUsername(String(body?.username ?? ""));
-  const apiKey = String(body?.apiKey ?? "").trim();
+  const clientIp = getAnalyzeRequestClientIp(request.headers);
+  const githubToken =
+    process.env.GITHUB_TOKEN?.trim() ??
+    process.env.GITHUB_PERSONAL_ACCESS_TOKEN?.trim() ??
+    "";
+  const aiApiKey = process.env.AI_API_KEY?.trim() ?? process.env.GEMINI_API_KEY?.trim() ?? "";
 
   if (!username || !isValidGitHubUsername(username)) {
-    return NextResponse.json(
-      { error: "Enter a valid GitHub username." },
-      { status: 400 },
+    return jsonError("Enter a valid GitHub username.", {
+      status: 400,
+    });
+  }
+
+  if (!githubToken) {
+    return jsonError(
+      "Server is missing GitHub credentials. Set GITHUB_TOKEN (or GITHUB_PERSONAL_ACCESS_TOKEN) in .env.local.",
+      {
+        status: 500,
+      },
     );
   }
 
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "GitHub API key is required." },
-      { status: 400 },
+  if (!aiApiKey) {
+    return jsonError(
+      "Server is missing AI credentials. Set AI_API_KEY (or GEMINI_API_KEY) in .env.local.",
+      {
+        status: 500,
+      },
     );
+  }
+
+  const protection = await enforceAnalyzeRequestProtection(clientIp);
+
+  if (!protection.allowed) {
+    return jsonError(protection.error, {
+      status: protection.status,
+      headers: protection.headers,
+    });
   }
 
   try {
-    const analysis = await buildLiveAnalysis(username, apiKey);
+    const analysis = await buildLiveAnalysis(username, githubToken);
+    const cachedAiFeedback = await getCachedAiFeedback(username);
+    let usedCachedAiFeedback = false;
 
-    return NextResponse.json(
+    if (cachedAiFeedback) {
+      applyAiFeedback(analysis, cachedAiFeedback);
+      usedCachedAiFeedback = true;
+    } else {
+      try {
+        const aiFeedback = await generateAiFeedback(analysis, aiApiKey);
+        applyAiFeedback(analysis, aiFeedback);
+        await setCachedAiFeedback(username, aiFeedback);
+      } catch {
+        return jsonError("AI analysis generation failed. Please try again later.", {
+          status: 502,
+          headers: protection.headers,
+        });
+      }
+    }
+
+    return jsonSuccess(
       {
         source: "github",
         analysis,
+        cachedAi: usedCachedAiFeedback,
       },
-      { status: 200 },
+      {
+        status: 200,
+        headers: protection.headers,
+      },
     );
   } catch (error) {
     if (error instanceof GitHubRequestError) {
       if (error.status === 401) {
-        return NextResponse.json(
-          { error: "GitHub API key is invalid or missing required scopes." },
-          { status: 401 },
+        return jsonError(
+          "Configured GitHub token is invalid or missing required scopes.",
+          {
+            status: 401,
+            headers: protection.headers,
+          },
         );
       }
 
       if (error.status === 403) {
-        return NextResponse.json(
-          { error: "GitHub API request was rate limited or forbidden for this token." },
-          { status: 403 },
+        return jsonError(
+          "GitHub API request was rate limited or forbidden for the configured token.",
+          {
+            status: 403,
+            headers: protection.headers,
+          },
         );
       }
 
       if (error.status === 404) {
-        return NextResponse.json(
-          { error: "GitHub user was not found." },
-          { status: 404 },
-        );
+        return jsonError("GitHub user was not found.", {
+          status: 404,
+          headers: protection.headers,
+        });
       }
 
-      return NextResponse.json(
-        { error: `GitHub API error: ${error.message}` },
-        { status: 502 },
-      );
+      return jsonError(`GitHub API error: ${error.message}`, {
+        status: 502,
+        headers: protection.headers,
+      });
     }
 
-    return NextResponse.json(
-      { error: "Unexpected failure while building analysis." },
-      { status: 500 },
-    );
+    return jsonError("Unexpected failure while building analysis.", {
+      status: 500,
+      headers: protection.headers,
+    });
   }
 }

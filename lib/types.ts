@@ -43,4 +43,5 @@ export type AnalyzeApiResponse = {
   analysis: AnalysisData;
   source: "github" | "mock";
   warning?: string;
+  cachedAi?: boolean;
 };

@@ -1,4 +1,4 @@
-import { GitInsightDashboard } from "../../_components/gitinsight-experience";
+import { GitInsightDashboard } from "../../components/experience";
 
 type AnalysisPageProps = {
   params: Promise<{

@@ -1,5 +1,5 @@
 
-import { GitInsightLanding } from "./_components/gitinsight-experience";
+import { GitInsightLanding } from "./components/experience";
 
 export default function Home() {
   return <GitInsightLanding />;

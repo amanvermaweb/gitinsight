@@ -167,6 +167,14 @@ async function requestGitHubOptional<T>(url: string, token: string): Promise<T |
   }
 }
 
+async function requestGitHubBestEffort<T>(url: string, token: string): Promise<T | null> {
+  try {
+    return await requestGitHub<T>(url, token);
+  } catch {
+    return null;
+  }
+}
+
 function repositoryRecommendation(readmeLength: number, repo: GitHubRepo) {
   if (readmeLength < 160) {
     return "Expand README with architecture, setup, and expected outcomes to improve reviewer confidence.";
@@ -203,14 +211,18 @@ export async function buildLiveAnalysis(
   username: string,
   apiKey: string,
 ): Promise<AnalysisData> {
-  const [user, repos, events] = await Promise.all([
+  const [user, repos] = await Promise.all([
     requestGitHub<GitHubUser>(`/users/${username}`, apiKey),
     requestGitHub<GitHubRepo[]>(
       `/users/${username}/repos?per_page=100&type=owner&sort=updated`,
       apiKey,
     ),
-    requestGitHubOptional<GitHubEvent[]>(`/users/${username}/events/public?per_page=100`, apiKey),
   ]);
+
+  const events = await requestGitHubBestEffort<GitHubEvent[]>(
+    `/users/${username}/events/public?per_page=100`,
+    apiKey,
+  );
 
   const ownedRepos = repos.filter((repo) => !repo.fork);
   const sortedRepos = [...ownedRepos].sort(

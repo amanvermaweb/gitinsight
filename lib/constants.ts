@@ -1,5 +1,4 @@
 export const THEME_STORAGE_KEY = "gitinsight_theme";
-export const API_KEY_STORAGE_KEY = "gitinsight_api_key";
 export const DEFAULT_USERNAME = "sindresorhus";
 
 export const LANDING_QUICK_PROFILES = [

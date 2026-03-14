@@ -2,9 +2,9 @@
 
 import { motion } from "framer-motion";
 import { useEffect, useId, useState } from "react";
-import { THEME_STORAGE_KEY } from "@/lib/gitinsight/constants";
-import type { AnalysisData, ThemeMode } from "@/lib/gitinsight/types";
-import { clamp } from "@/lib/gitinsight/utils";
+import { THEME_STORAGE_KEY } from "@/lib/constants";
+import type { AnalysisData, ThemeMode } from "@/lib/types";
+import { clamp } from "@/lib/utils";
 
 function getSystemTheme(): ThemeMode {
   if (typeof window === "undefined") {
@@ -185,7 +185,7 @@ export function ThemeToggle({
   onChange: (theme: ThemeMode) => void;
 }) {
   return (
-    <div className="flex items-center rounded-full border border-white/8 bg-white/6 p-1 backdrop-blur-xl">
+    <div className=" flex items-center rounded-full border border-white/8 bg-white/6 p-1 backdrop-blur-xl">
       {(["dark", "light"] as const).map((mode) => {
         const active = theme === mode;
 
@@ -194,7 +194,7 @@ export function ThemeToggle({
             key={mode}
             type="button"
             onClick={() => onChange(mode)}
-            className={`rounded-full px-3 py-2 text-sm font-medium tracking-[-0.02em] transition ${
+            className={`cursor-pointer rounded-full px-3 py-2 text-sm font-medium tracking-[-0.02em] transition ${
               active
                 ? "bg-[color:var(--foreground)] text-[color:var(--background)]"
                 : "text-[color:var(--muted-strong)] hover:text-[color:var(--foreground)]"
