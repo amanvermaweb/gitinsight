@@ -1,26 +1,369 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #070b10;
+  --background-secondary: #0f151c;
+  --foreground: #f5f7f8;
+  --muted: #8d97a3;
+  --muted-strong: #b9c2cb;
+  --panel: rgba(11, 17, 23, 0.74);
+  --panel-strong: rgba(16, 24, 31, 0.9);
+  --nav: rgba(10, 16, 22, 0.72);
+  --border: rgba(255, 255, 255, 0.09);
+  --accent: #8dc8b0;
+  --accent-strong: #b7f1d7;
+  --accent-soft: rgba(141, 200, 176, 0.1);
+  --warm: #c5b28e;
+  --button-foreground: #07100e;
+  --grid: rgba(255, 255, 255, 0.05);
+  --glow-primary: rgba(141, 200, 176, 0.18);
+  --glow-secondary: rgba(197, 178, 142, 0.08);
+  --shadow-strong: 0 30px 70px rgba(0, 0, 0, 0.28);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+.font-sans {
+  font-family: var(--font-geist-sans), sans-serif;
+}
+
+.font-mono {
+  font-family: var(--font-geist-mono), monospace;
+}
+
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at top, rgba(141, 200, 176, 0.08), transparent 32%),
+    linear-gradient(180deg, #060a0f 0%, #05080d 100%);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), sans-serif;
+  transition:
+    background 0.45s ease,
+    color 0.45s ease;
+}
+
+body:has(.gitinsight-app[data-theme="light"]) {
+  background:
+    radial-gradient(circle at top, rgba(137, 161, 156, 0.12), transparent 32%),
+    linear-gradient(180deg, #ede9e1 0%, #e5dfd6 100%);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+::selection {
+  background: rgba(183, 241, 215, 0.28);
+  color: #05100d;
+}
+
+.gitinsight-app {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  color: var(--foreground);
+}
+
+.gitinsight-app[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+.gitinsight-app[data-theme="light"] {
+  --background: #ece7de;
+  --background-secondary: #e2dccf;
+  --foreground: #12181d;
+  --muted: #68737c;
+  --muted-strong: #37434d;
+  --panel: rgba(255, 255, 255, 0.58);
+  --panel-strong: rgba(255, 255, 255, 0.84);
+  --nav: rgba(250, 248, 243, 0.72);
+  --border: rgba(18, 24, 29, 0.09);
+  --accent: #4d7c70;
+  --accent-strong: #335e54;
+  --accent-soft: rgba(77, 124, 112, 0.08);
+  --warm: #9a7a4d;
+  --button-foreground: #f7f5ef;
+  --grid: rgba(18, 24, 29, 0.06);
+  --glow-primary: rgba(77, 124, 112, 0.1);
+  --glow-secondary: rgba(154, 122, 77, 0.08);
+  --shadow-strong: 0 28px 60px rgba(62, 57, 48, 0.12);
+  color-scheme: light;
+}
+
+.gi-grid,
+.gi-noise,
+.gi-particles,
+.gi-orb {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}
+
+.gi-grid {
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-position: center;
+  background-size: 72px 72px;
+  mask-image: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.75),
+    rgba(0, 0, 0, 0.15) 50%,
+    transparent 100%
+  );
+}
+
+.gi-grid::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(7, 11, 16, 0) 0%,
+    var(--background) 100%
+  );
+}
+
+.gitinsight-app[data-theme="light"] .gi-grid::after {
+  background: linear-gradient(
+    180deg,
+    rgba(236, 231, 222, 0) 0%,
+    var(--background) 100%
+  );
+}
+
+.gi-orb {
+  filter: blur(40px);
+  opacity: 0.72;
+}
+
+.gi-orb-primary {
+  inset: 7rem auto auto 8%;
+  height: 24rem;
+  width: 24rem;
+  border-radius: 999px;
+  background: radial-gradient(circle, var(--glow-primary) 0%, transparent 72%);
+  animation: drift 18s ease-in-out infinite;
+}
+
+.gi-orb-secondary {
+  inset: 12rem 8% auto auto;
+  height: 20rem;
+  width: 20rem;
+  border-radius: 999px;
+  background: radial-gradient(
+    circle,
+    var(--glow-secondary) 0%,
+    transparent 72%
+  );
+  animation: drift 22s ease-in-out infinite reverse;
+}
+
+.gi-noise {
+  opacity: 0.18;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    rgba(255, 255, 255, 0.14) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.25), transparent 75%);
+}
+
+.gi-particle {
+  position: absolute;
+  bottom: -4rem;
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent-strong), transparent);
+  box-shadow: 0 0 18px rgba(183, 241, 215, 0.35);
+  animation: float-up linear infinite;
+}
+
+.gi-particle:nth-child(1) {
+  left: 10%;
+  animation-duration: 16s;
+  animation-delay: -3s;
+}
+
+.gi-particle:nth-child(2) {
+  left: 22%;
+  animation-duration: 18s;
+  animation-delay: -11s;
+}
+
+.gi-particle:nth-child(3) {
+  left: 35%;
+  animation-duration: 15s;
+  animation-delay: -6s;
+}
+
+.gi-particle:nth-child(4) {
+  left: 48%;
+  animation-duration: 17s;
+  animation-delay: -9s;
+}
+
+.gi-particle:nth-child(5) {
+  left: 60%;
+  animation-duration: 20s;
+  animation-delay: -4s;
+}
+
+.gi-particle:nth-child(6) {
+  left: 72%;
+  animation-duration: 14s;
+  animation-delay: -10s;
+}
+
+.gi-particle:nth-child(7) {
+  left: 82%;
+  animation-duration: 19s;
+  animation-delay: -13s;
+}
+
+.gi-particle:nth-child(8) {
+  left: 89%;
+  animation-duration: 16s;
+  animation-delay: -8s;
+}
+
+.gi-particle:nth-child(9) {
+  left: 95%;
+  animation-duration: 21s;
+  animation-delay: -5s;
+}
+
+.gi-panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 32px;
+  background: var(--panel);
+  box-shadow: var(--shadow-strong);
+  backdrop-filter: blur(22px);
+}
+
+.gi-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.18),
+    transparent
+  );
+  opacity: 0.7;
+}
+
+input::placeholder {
+  color: var(--muted);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  background-clip: padding-box;
+}
+
+.gitinsight-app[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(18, 24, 29, 0.16);
+  background-clip: padding-box;
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(1.5rem, -1rem, 0);
+  }
+}
+
+@keyframes float-up {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.9);
+    opacity: 0;
+  }
+
+  15% {
+    opacity: 0.5;
+  }
+
+  100% {
+    transform: translate3d(0, -72vh, 0) scale(1.1);
+    opacity: 0;
+  }
+}
+
+@media (max-width: 1024px) {
+  .gi-grid {
+    background-size: 56px 56px;
+  }
+}
+
+@media (max-width: 640px) {
+  .gi-grid {
+    background-size: 42px 42px;
+  }
+
+  .gi-orb-primary {
+    inset: 6rem auto auto -12%;
+    height: 18rem;
+    width: 18rem;
+  }
+
+  .gi-orb-secondary {
+    inset: 10rem -12% auto auto;
+    height: 16rem;
+    width: 16rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .gi-orb,
+  .gi-particle {
+    animation: none;
+  }
 }
