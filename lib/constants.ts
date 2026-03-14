@@ -1,14 +1,6 @@
 export const THEME_STORAGE_KEY = "gitinsight_theme";
 export const DEFAULT_USERNAME = "sindresorhus";
 
-export const LANDING_QUICK_PROFILES = [
-  "sindresorhus",
-  "vercel",
-  "torvalds",
-  "gaearon",
-  "addyosmani",
-] as const;
-
 export const navItems = [
   { label: "Overview", href: "#overview" },
   { label: "Repositories", href: "#repositories" },

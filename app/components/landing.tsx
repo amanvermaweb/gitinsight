@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import {
   DEFAULT_USERNAME,
-  LANDING_QUICK_PROFILES,
   sectionTransition,
 } from "@/lib/constants";
 import { isValidGitHubUsername, normalizeUsername } from "@/lib/utils";
@@ -93,7 +92,6 @@ export function GitInsightLanding() {
                   username={username}
                   error={error}
                   isPending={isPending}
-                  quickProfiles={LANDING_QUICK_PROFILES}
                   onUsernameChange={setUsername}
                   onQuickProfile={(profile) => {
                     setUsername(profile);

@@ -4,7 +4,6 @@ type GitInsightLandingFormProps = {
   username: string;
   error: string | null;
   isPending: boolean;
-  quickProfiles: readonly string[];
   onUsernameChange: (value: string) => void;
   onQuickProfile: (profile: string) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
@@ -14,7 +13,6 @@ export function GitInsightLandingForm({
   username,
   error,
   isPending,
-  quickProfiles,
   onUsernameChange,
   onQuickProfile,
   onSubmit,
@@ -55,21 +53,6 @@ export function GitInsightLandingForm({
       </div>
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[0.7rem] uppercase tracking-[0.2em] text-(--muted)">
-            Quick profiles
-          </span>
-          {quickProfiles.map((profile) => (
-            <button
-              key={profile}
-              type="button"
-              onClick={() => onQuickProfile(profile)}
-              className="cursor-pointer rounded-full border border-white/8 bg-white/5 px-3 py-1.5 font-mono text-[0.68rem] uppercase tracking-[0.14em] text-(--foreground) transition hover:bg-white/10"
-            >
-              @{profile}
-            </button>
-          ))}
-        </div>
 
         <button
           type="submit"
