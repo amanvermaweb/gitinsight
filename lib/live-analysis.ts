@@ -4,6 +4,11 @@ import { clamp, roundToTenth } from "./utils";
 type GitHubUser = {
   login: string;
   followers: number;
+  public_repos: number;
+};
+
+type GitHubRepositorySearchResponse = {
+  items: GitHubRepo[];
 };
 
 type GitHubRepo = {
@@ -56,6 +61,7 @@ type EnrichedRepository = {
 };
 
 const GITHUB_API_ROOT = "https://api.github.com";
+const TOP_REPOSITORY_SEARCH_LIMIT = 30;
 const GITHUB_API_HEADERS = {
   Accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2022-11-28",
@@ -175,6 +181,89 @@ async function requestGitHubBestEffort<T>(url: string, token: string): Promise<T
   }
 }
 
+function parseGitHubErrorMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const maybeMessage = (payload as { message?: unknown }).message;
+  return typeof maybeMessage === "string" ? maybeMessage : null;
+}
+
+function normalizeRepoKey(repoName: string) {
+  return repoName.toLowerCase();
+}
+
+function extractLastPageNumber(linkHeader: string | null) {
+  if (!linkHeader) {
+    return null;
+  }
+
+  const links = linkHeader.split(",");
+  const lastLink = links.find((entry) => /rel="last"/.test(entry));
+
+  if (!lastLink) {
+    return null;
+  }
+
+  const match = lastLink.match(/<([^>]+)>/);
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const pageValue = new URL(match[1]).searchParams.get("page");
+    const pageNumber = Number(pageValue);
+    if (!Number.isFinite(pageNumber) || pageNumber <= 0) {
+      return null;
+    }
+
+    return Math.floor(pageNumber);
+  } catch {
+    return null;
+  }
+}
+
+async function requestRepositoryCommitCount(
+  repoFullName: string,
+  username: string,
+  token: string,
+) {
+  const response = await fetch(
+    `${GITHUB_API_ROOT}/repos/${repoFullName}/commits?author=${encodeURIComponent(
+      username,
+    )}&per_page=1`,
+    {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        ...GITHUB_API_HEADERS,
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  );
+
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 409) {
+      return 0;
+    }
+
+    const payload = await response.json().catch(() => null);
+    throw new GitHubRequestError(
+      response.status,
+      parseGitHubErrorMessage(payload) ?? "GitHub request failed.",
+    );
+  }
+
+  const lastPage = extractLastPageNumber(response.headers.get("link"));
+  if (lastPage !== null) {
+    return lastPage;
+  }
+
+  const firstPage = (await response.json().catch(() => [])) as unknown;
+  return Array.isArray(firstPage) ? firstPage.length : 0;
+}
+
 function repositoryRecommendation(readmeLength: number, repo: GitHubRepo) {
   if (readmeLength < 160) {
     return "Expand README with architecture, setup, and expected outcomes to improve reviewer confidence.";
@@ -211,13 +300,18 @@ export async function buildLiveAnalysis(
   username: string,
   apiKey: string,
 ): Promise<AnalysisData> {
-  const [user, repos] = await Promise.all([
+  const repositorySearchQuery = encodeURIComponent(
+    `user:${username} fork:false archived:false`,
+  );
+
+  const [user, repositorySearch] = await Promise.all([
     requestGitHub<GitHubUser>(`/users/${username}`, apiKey),
-    requestGitHub<GitHubRepo[]>(
-      `/users/${username}/repos?per_page=100&type=owner&sort=updated`,
+    requestGitHub<GitHubRepositorySearchResponse>(
+      `/search/repositories?q=${repositorySearchQuery}&sort=stars&order=desc&per_page=${TOP_REPOSITORY_SEARCH_LIMIT}`,
       apiKey,
     ),
   ]);
+  const repos = repositorySearch.items ?? [];
 
   const events = await requestGitHubBestEffort<GitHubEvent[]>(
     `/users/${username}/events/public?per_page=100`,
@@ -237,7 +331,7 @@ export async function buildLiveAnalysis(
   const monthlyMap = new Map(monthlyWindow.map((month) => [month.key, 0]));
   const pushEvents = (events ?? []).filter((event) => event.type === "PushEvent");
   const nowMs = Date.now();
-  const commitsByRepo = new Map<string, number>();
+  const recentCommitsByRepo = new Map<string, number>();
   const weeklyByRepo = new Map<string, number[]>();
 
   for (const event of pushEvents) {
@@ -249,17 +343,18 @@ export async function buildLiveAnalysis(
       monthlyMap.set(key, (monthlyMap.get(key) ?? 0) + commitSize);
     }
 
-    commitsByRepo.set(
-      event.repo.name,
-      (commitsByRepo.get(event.repo.name) ?? 0) + commitSize,
+    const repoKey = normalizeRepoKey(event.repo.name);
+    recentCommitsByRepo.set(
+      repoKey,
+      (recentCommitsByRepo.get(repoKey) ?? 0) + commitSize,
     );
 
     const diffDays = Math.floor((nowMs - eventDate.getTime()) / 86_400_000);
     if (diffDays >= 0 && diffDays < 49) {
       const bucketIndex = 6 - Math.floor(diffDays / 7);
-      const buckets = weeklyByRepo.get(event.repo.name) ?? Array(7).fill(0);
+      const buckets = weeklyByRepo.get(repoKey) ?? Array(7).fill(0);
       buckets[bucketIndex] += commitSize;
-      weeklyByRepo.set(event.repo.name, buckets);
+      weeklyByRepo.set(repoKey, buckets);
     }
   }
 
@@ -280,6 +375,12 @@ export async function buildLiveAnalysis(
         requestGitHubOptional<Record<string, number>>(repo.languages_url, apiKey),
         requestGitHubOptional<GitHubReadme>(`/repos/${repo.full_name}/readme`, apiKey),
       ]);
+      const repoKey = normalizeRepoKey(repo.full_name);
+      const commitCount = await requestRepositoryCommitCount(
+        repo.full_name,
+        user.login,
+        apiKey,
+      ).catch(() => recentCommitsByRepo.get(repoKey) ?? 0);
 
       const languageEntries = Object.entries(languages ?? {}).sort(
         (first, second) => second[1] - first[1],
@@ -302,7 +403,7 @@ export async function buildLiveAnalysis(
         clamp(6.2 + starFactor + recencyFactor + (hasReadme ? 0.65 : 0.15), 6.2, 9.8),
       );
 
-      const weeklyRaw = weeklyByRepo.get(repo.full_name) ?? Array(7).fill(0);
+      const weeklyRaw = weeklyByRepo.get(repoKey) ?? Array(7).fill(0);
       const weeklyMax = Math.max(...weeklyRaw, 1);
       const velocity = weeklyRaw.map((value) =>
         Math.max(2, Math.round((value / weeklyMax) * 10) + 2),
@@ -318,10 +419,7 @@ export async function buildLiveAnalysis(
         name: repo.full_name,
         stack,
         stars: repo.stargazers_count,
-        commits: Math.max(
-          commitsByRepo.get(repo.full_name) ?? 0,
-          Math.round(repo.size / 18),
-        ),
+        commits: commitCount,
         quality,
         readme: readmeInsight(readmeLength),
         recommendation: repositoryRecommendation(readmeLength, repo),
@@ -335,7 +433,7 @@ export async function buildLiveAnalysis(
     }),
   );
 
-  const totalStars = ownedRepos.reduce((sum, repo) => sum + repo.stargazers_count, 0);
+  const totalStars = sortedRepos.reduce((sum, repo) => sum + repo.stargazers_count, 0);
 
   const readmeCoverage =
     enrichedRepos.filter((repo) => repo.hasReadme).length /
@@ -424,13 +522,13 @@ export async function buildLiveAnalysis(
   });
 
   const strengths = [
-    `${user.login} shows a strong portfolio baseline with ${ownedRepos.length} public repositories and clear shipping momentum.`,
+    `${user.login} shows a strong portfolio baseline with ${user.public_repos} public repositories and clear shipping momentum.`,
     readmeCoverage >= 0.7
       ? "Documentation signal is strong across flagship repositories, improving reviewer trust quickly."
       : "Repository signal is good; documentation depth in top projects can still be elevated.",
     totalStars >= 300
-      ? "Community pull is visible through stars and recurring engagement on standout projects."
-      : "Project quality appears solid even with modest star counts, indicating strong implementation fundamentals.",
+      ? "Community pull is visible through combined stars and recurring engagement on top repositories."
+      : "Project quality appears solid even with modest star counts across top repositories, indicating strong implementation fundamentals.",
   ];
 
   const weaknesses = [
@@ -465,7 +563,7 @@ export async function buildLiveAnalysis(
     summary:
       "Live GitHub signals suggest a credible engineering profile with practical depth. The highest leverage improvements are clearer storytelling and stronger consistency across repository documentation.",
     highlights: [
-      `Analyzed ${analyzedRepos.length} repositories and ${pushEvents.length} recent public push events.`,
+      `Analyzed ${analyzedRepos.length} top repositories and ${pushEvents.length} recent public push events.`,
       `${readmeCoverage >= 0.7 ? "Strong" : "Moderate"} README coverage across featured repositories.`,
       `${languageTotals.size} distinct languages detected in the top analyzed projects.`,
     ],

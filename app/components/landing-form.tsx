@@ -1,12 +1,14 @@
 "use client";
 
+import { ArrowRight, Search } from "lucide-react";
+import type { SubmitEvent } from "react";
+
 type GitInsightLandingFormProps = {
   username: string;
   error: string | null;
   isPending: boolean;
   onUsernameChange: (value: string) => void;
-  onQuickProfile: (profile: string) => void;
-  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onSubmit: (event: SubmitEvent<HTMLFormElement>) => void;
 };
 
 export function GitInsightLandingForm({
@@ -14,7 +16,6 @@ export function GitInsightLandingForm({
   error,
   isPending,
   onUsernameChange,
-  onQuickProfile,
   onSubmit,
 }: GitInsightLandingFormProps) {
   return (
@@ -26,26 +27,14 @@ export function GitInsightLandingForm({
           </span>
           <div className="mt-3 flex items-center gap-3 rounded-[22px] border border-white/8 bg-white/4 px-4 py-4">
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/8 bg-white/6 text-(--muted)">
-              <svg
-                aria-hidden="true"
-                className="h-5 w-5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <circle cx="11" cy="11" r="7" />
-                <path d="m20 20-3.5-3.5" />
-              </svg>
+              <Search aria-hidden="true" className="h-5 w-5" strokeWidth={1.8} />
             </div>
             <input
               type="text"
               aria-label="GitHub username"
               value={username}
               onChange={(event) => onUsernameChange(event.target.value)}
-              placeholder="sindresorhus"
+              placeholder="amanvermaweb"
               className="min-w-0 flex-1 border-0 bg-transparent text-lg text-(--foreground) outline-none placeholder:text-(--muted) sm:text-[1.28rem]"
             />
           </div>
@@ -59,19 +48,7 @@ export function GitInsightLandingForm({
           className="w-full cursor-pointer inline-flex h-14 items-center justify-center gap-3 rounded-2xl bg-(--accent-strong) px-6 text-sm font-semibold uppercase tracking-[0.14em] text-(--button-foreground) transition hover:-translate-y-px hover:bg-(--accent) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--accent)"
         >
           {isPending ? "Opening analysis" : "Analyze portfolio"}
-          <svg
-            aria-hidden="true"
-            className="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M5 12h14" />
-            <path d="m13 5 7 7-7 7" />
-          </svg>
+          <ArrowRight aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />
         </button>
       </div>
 

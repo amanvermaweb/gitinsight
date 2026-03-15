@@ -86,6 +86,12 @@ img {
   color: var(--foreground);
 }
 
+/* Allow long dynamic tokens (usernames, repo names, URLs) to wrap safely. */
+.gitinsight-app :where(h1, h2, h3, p, li) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .gitinsight-app[data-theme="dark"] {
   color-scheme: dark;
 }
@@ -281,6 +287,101 @@ img {
   opacity: 0.7;
 }
 
+.gi-skill-surface {
+  display: grid;
+  gap: 1rem;
+}
+
+.gi-skill-stage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 28px;
+  background:
+    radial-gradient(
+      120% 90% at 18% 8%,
+      color-mix(in srgb, var(--accent-strong) 18%, transparent),
+      transparent 58%
+    ),
+    linear-gradient(
+      165deg,
+      color-mix(in srgb, var(--panel-strong) 88%, black),
+      color-mix(in srgb, var(--panel) 85%, black)
+    );
+  padding: 1.1rem;
+}
+
+.gi-skill-stage::after {
+  content: "";
+  position: absolute;
+  inset: auto 12% -28% 12%;
+  height: 5.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-strong) 18%, transparent);
+  filter: blur(32px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.gi-skill-stage-grid {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: radial-gradient(circle at center, black 36%, transparent 100%);
+}
+
+.gi-skill-chip {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--panel-strong) 92%, transparent);
+  padding: 0.75rem 0.9rem;
+}
+
+.gi-skill-cards {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.gi-skill-card {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--panel-strong) 96%, white 4%),
+      color-mix(in srgb, var(--panel) 90%, black 10%)
+    );
+  padding: 1rem;
+  transition:
+    transform 0.28s ease,
+    border-color 0.28s ease,
+    background 0.28s ease;
+}
+
+.gi-skill-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent-strong) 45%, var(--border));
+}
+
+.gi-skill-progress-track {
+  margin-top: 0.75rem;
+  height: 0.52rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+
+.gi-skill-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-strong), var(--warm));
+  box-shadow: 0 0 22px color-mix(in srgb, var(--accent-strong) 36%, transparent);
+}
+
 input::placeholder {
   color: var(--muted);
 }
@@ -344,6 +445,14 @@ input::placeholder {
     background-size: 42px 42px;
   }
 
+  .gi-skill-stage {
+    padding: 0.85rem;
+  }
+
+  .gi-skill-stage-grid {
+    background-size: 34px 34px;
+  }
+
   .gi-orb-primary {
     inset: 6rem auto auto -12%;
     height: 18rem;
@@ -354,6 +463,17 @@ input::placeholder {
     inset: 10rem -12% auto auto;
     height: 16rem;
     width: 16rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .gi-skill-surface {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .gi-skill-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

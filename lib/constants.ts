@@ -1,5 +1,5 @@
 export const THEME_STORAGE_KEY = "gitinsight_theme";
-export const DEFAULT_USERNAME = "sindresorhus";
+export const DEFAULT_USERNAME = "amanvermaweb";
 
 export const navItems = [
   { label: "Overview", href: "#overview" },

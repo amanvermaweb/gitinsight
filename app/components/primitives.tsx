@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { Share2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { THEME_STORAGE_KEY } from "@/lib/constants";
 import type { AnalysisData, ThemeMode } from "@/lib/types";
@@ -82,22 +83,7 @@ export function usePersistedTheme(): [ThemeMode, (nextTheme: ThemeMode) => void]
 export function GitInsightMark() {
   return (
     <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/8 bg-white/6 shadow-[0_12px_40px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-      <svg
-        aria-hidden="true"
-        className="h-5 w-5 text-[color:var(--accent-strong)]"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M8 6a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-        <path d="M16 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-        <path d="M16 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
-        <path d="M10.8 7.4 13.2 6" />
-        <path d="M10.8 10.6 13.2 18" />
-      </svg>
+      <Share2 aria-hidden="true" className="h-5 w-5 text-(--accent-strong)" strokeWidth={1.8} />
     </div>
   );
 }
@@ -145,7 +131,7 @@ export function Panel({
 
 export function SurfaceLabel({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-white/8 bg-white/6 px-3 py-1 font-mono text-[0.72rem] uppercase tracking-[0.22em] text-[color:var(--muted)]">
+    <span className="inline-flex items-center rounded-full border border-white/8 bg-white/6 px-3 py-1 font-mono text-[0.72rem] uppercase tracking-[0.22em] text-(--muted)">
       {children}
     </span>
   );
@@ -166,10 +152,10 @@ export function SectionHeading({
     <div id={id} className="space-y-3">
       <SurfaceLabel>{eyebrow}</SurfaceLabel>
       <div className="space-y-2">
-        <h2 className="text-3xl font-semibold tracking-[-0.04em] text-[color:var(--foreground)] sm:text-[2.45rem]">
+        <h2 className="text-3xl font-semibold tracking-[-0.04em] text-(--foreground) sm:text-[2.45rem]">
           {title}
         </h2>
-        <p className="max-w-3xl text-base leading-7 text-[color:var(--muted)] sm:text-lg">
+        <p className="max-w-3xl text-base leading-7 text-(--muted) sm:text-lg">
           {description}
         </p>
       </div>
@@ -185,7 +171,7 @@ export function ThemeToggle({
   onChange: (theme: ThemeMode) => void;
 }) {
   return (
-    <div className=" flex items-center rounded-full border border-white/8 bg-white/6 p-1 backdrop-blur-xl">
+    <div className="flex items-center rounded-full border border-white/8 bg-white/6 p-1 backdrop-blur-xl">
       {(["dark", "light"] as const).map((mode) => {
         const active = theme === mode;
 
@@ -196,8 +182,8 @@ export function ThemeToggle({
             onClick={() => onChange(mode)}
             className={`cursor-pointer rounded-full px-3 py-2 text-sm font-medium tracking-[-0.02em] transition ${
               active
-                ? "bg-[color:var(--foreground)] text-[color:var(--background)]"
-                : "text-[color:var(--muted-strong)] hover:text-[color:var(--foreground)]"
+                ? "bg-(--foreground) text-(--background)"
+                : "text-(--muted-strong) hover:text-(--foreground)"
             }`}
           >
             {mode === "dark" ? "Dark" : "Light"}
@@ -267,15 +253,15 @@ export function ScoreRing({ score }: { score: number }) {
         background: `conic-gradient(var(--accent-strong) ${progress}, rgba(255,255,255,0.08) ${progress})`,
       }}
     >
-      <div className="absolute inset-[14px] rounded-full bg-[color:var(--panel-strong)] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]" />
+      <div className="absolute inset-3.5 rounded-full bg-(--panel-strong) shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]" />
       <div className="relative z-10 text-center">
-        <p className="font-mono text-xs uppercase tracking-[0.22em] text-[color:var(--muted)]">
+        <p className="font-mono text-xs uppercase tracking-[0.22em] text-(--muted)">
           Portfolio
         </p>
-        <p className="mt-2 text-4xl font-semibold tracking-[-0.06em] text-[color:var(--foreground)]">
+        <p className="mt-2 text-4xl font-semibold tracking-[-0.06em] text-(--foreground)">
           <AnimatedNumber value={score} decimals={1} />
         </p>
-        <p className="mt-1 text-sm text-[color:var(--muted)]">/ 10</p>
+        <p className="mt-1 text-sm text-(--muted)">/ 10</p>
       </div>
     </div>
   );
@@ -283,9 +269,14 @@ export function ScoreRing({ score }: { score: number }) {
 
 export function SkillRadar({ skills }: { skills: AnalysisData["skills"] }) {
   const gradientId = useId();
+  const glowId = useId();
   const center = 170;
   const radius = 110;
   const angleStep = (Math.PI * 2) / skills.length;
+  const averageSkill = Math.round(
+    skills.reduce((sum, skill) => sum + skill.value, 0) / skills.length,
+  );
+  const strongestSkill = [...skills].sort((a, b) => b.value - a.value)[0];
 
   const pointAt = (value: number, index: number, scale = 1) => {
     const angle = -Math.PI / 2 + index * angleStep;
@@ -308,16 +299,37 @@ export function SkillRadar({ skills }: { skills: AnalysisData["skills"] }) {
     return { ...point, index };
   });
 
+  const describeSkillConfidence = (value: number) => {
+    if (value >= 75) {
+      return "Strong evidence";
+    }
+
+    if (value >= 55) {
+      return "Clear signal";
+    }
+
+    return "Needs more evidence";
+  };
+
   return (
-    <div className="grid gap-8 lg:grid-cols-[0.95fr_1.05fr]">
-      <div className="relative overflow-hidden rounded-[28px] border border-white/8 bg-[color:var(--panel-strong)] p-4 sm:p-6">
-        <svg viewBox="0 0 340 340" className="mx-auto w-full max-w-[340px]">
+    <div className="flex flex-col gap-4">
+      <div className="gi-skill-stage w-full">
+        <div className="gi-skill-stage-grid" aria-hidden="true" />
+
+        <svg viewBox="0 0 340 340" className="relative z-10 mx-auto w-full max-w-85">
           <defs>
             <linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="1">
-              <stop offset="0%" stopColor="var(--accent-strong)" stopOpacity="0.8" />
-              <stop offset="100%" stopColor="var(--warm)" stopOpacity="0.24" />
+              <stop offset="0%" stopColor="var(--accent-strong)" stopOpacity="0.88" />
+              <stop offset="100%" stopColor="var(--warm)" stopOpacity="0.2" />
             </linearGradient>
+            <radialGradient id={glowId} cx="50%" cy="50%" r="60%">
+              <stop offset="0%" stopColor="var(--accent-strong)" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="var(--accent-strong)" stopOpacity="0" />
+            </radialGradient>
           </defs>
+
+          <circle cx={center} cy={center} r="132" fill={`url(#${glowId})`} />
+
           {[0.25, 0.5, 0.75, 1].map((ring) => (
             <polygon
               key={ring}
@@ -328,7 +340,7 @@ export function SkillRadar({ skills }: { skills: AnalysisData["skills"] }) {
                 })
                 .join(" ")}
               fill="none"
-              stroke="rgba(255,255,255,0.08)"
+              stroke="rgba(255,255,255,0.13)"
               strokeWidth="1"
             />
           ))}
@@ -339,7 +351,7 @@ export function SkillRadar({ skills }: { skills: AnalysisData["skills"] }) {
               y1={center}
               x2={point.x}
               y2={point.y}
-              stroke="rgba(255,255,255,0.08)"
+              stroke="rgba(255,255,255,0.12)"
               strokeWidth="1"
             />
           ))}
@@ -361,35 +373,67 @@ export function SkillRadar({ skills }: { skills: AnalysisData["skills"] }) {
                 cy={point.y}
                 r="4.5"
                 fill="var(--accent-strong)"
-                stroke="rgba(255,255,255,0.65)"
+                stroke="rgba(255,255,255,0.72)"
                 strokeWidth="1"
               />
             );
           })}
         </svg>
+
+        <div className="relative z-10 mt-5 grid gap-3 sm:grid-cols-2">
+          <div className="gi-skill-chip">
+            <p className="font-mono text-[0.66rem] uppercase tracking-[0.2em] text-(--muted)">
+              Average confidence
+            </p>
+            <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-(--foreground)">
+              {averageSkill}%
+            </p>
+          </div>
+          <div className="gi-skill-chip">
+            <p className="font-mono text-[0.66rem] uppercase tracking-[0.2em] text-(--muted)">
+              Strongest signal
+            </p>
+            <p className="mt-2 text-xl font-semibold tracking-[-0.03em] text-(--foreground)">
+              {strongestSkill.label}
+            </p>
+          </div>
+        </div>
       </div>
 
-      <div className="grid content-start gap-4 sm:grid-cols-2">
-        {skills.map((skill) => (
-          <div
+      <div className="grid gap-3 lg:grid-cols-2">
+        {skills.map((skill, index) => (
+          <motion.div
             key={skill.label}
-            className="rounded-[24px] border border-white/8 bg-[color:var(--panel-strong)] p-5"
+            initial={{ opacity: 0, y: 14 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, amount: 0.35 }}
+            transition={{
+              duration: 0.42,
+              delay: index * 0.06,
+              ease: [0.22, 1, 0.36, 1],
+            }}
+            className="gi-skill-card"
           >
             <div className="flex items-center justify-between gap-4">
-              <p className="text-sm font-medium uppercase tracking-[0.18em] text-[color:var(--muted)]">
+              <p className="text-base font-semibold tracking-[0.01em] text-(--foreground)">
                 {skill.label}
               </p>
-              <p className="font-mono text-sm text-[color:var(--foreground)]">{skill.value}%</p>
+              <p className="font-mono text-sm text-(--muted-strong)">{skill.value}%</p>
             </div>
-            <div className="mt-4 h-2.5 rounded-full bg-white/6">
+
+            <div className="gi-skill-progress-track">
               <motion.div
                 initial={{ width: 0 }}
                 animate={{ width: `${skill.value}%` }}
                 transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
-                className="h-full rounded-full bg-[linear-gradient(90deg,var(--accent-strong),var(--warm))]"
+                className="gi-skill-progress-fill"
               />
             </div>
-          </div>
+
+            <p className="mt-3 text-sm text-(--muted)">
+              {describeSkillConfidence(skill.value)}
+            </p>
+          </motion.div>
         ))}
       </div>
     </div>

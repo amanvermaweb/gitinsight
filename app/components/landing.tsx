@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useState, useTransition, type SubmitEvent } from "react";
 import {
   DEFAULT_USERNAME,
   sectionTransition,
@@ -25,7 +25,7 @@ export function GitInsightLanding() {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const nextUsername = normalizeUsername(username) || DEFAULT_USERNAME;
@@ -93,10 +93,6 @@ export function GitInsightLanding() {
                   error={error}
                   isPending={isPending}
                   onUsernameChange={setUsername}
-                  onQuickProfile={(profile) => {
-                    setUsername(profile);
-                    setError(null);
-                  }}
                   onSubmit={handleSubmit}
                 />
               </div>

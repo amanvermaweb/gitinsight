@@ -3,6 +3,7 @@ import { isRedisRestConfigured, runRedisCommand } from "@/lib/redis-rest";
 
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_CACHE_MAX_ENTRIES = 2_000;
+const DEFAULT_AI_PROMPT_VERSION = "v3";
 const REDIS_CACHE_PREFIX = "analyze:ai-feedback:";
 
 type CacheRecord = {
@@ -41,7 +42,14 @@ function getCacheMaxEntries() {
 }
 
 function normalizeCacheKey(username: string) {
-  return username.trim().toLowerCase();
+  const normalized = username.trim().toLowerCase();
+  const promptVersion = process.env.ANALYZE_AI_PROMPT_VERSION?.trim() || DEFAULT_AI_PROMPT_VERSION;
+
+  if (!normalized) {
+    return "";
+  }
+
+  return `${promptVersion}:${normalized}`;
 }
 
 function getRedisCacheKey(username: string) {
