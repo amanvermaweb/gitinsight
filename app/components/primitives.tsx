@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { Share2 } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
 import { THEME_STORAGE_KEY } from "@/lib/constants";
 import type { AnalysisData, ThemeMode } from "@/lib/types";
 import { clamp } from "@/lib/utils";
@@ -42,39 +42,51 @@ function readThemePreference(): {
   };
 }
 
+const THEME_SYNC_EVENT = "gitinsight-theme-sync";
+
+function getThemeSnapshot(): ThemeMode {
+  return readThemePreference().theme;
+}
+
+function subscribeToTheme(callback: () => void) {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+
+  const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const handleSystemThemeChange = () => {
+    const { hasStoredPreference } = readThemePreference();
+    if (!hasStoredPreference) {
+      callback();
+    }
+  };
+  const handleThemeSync = () => callback();
+
+  mediaQuery.addEventListener("change", handleSystemThemeChange);
+  window.addEventListener(THEME_SYNC_EVENT, handleThemeSync);
+  window.addEventListener("storage", handleThemeSync);
+
+  return () => {
+    mediaQuery.removeEventListener("change", handleSystemThemeChange);
+    window.removeEventListener(THEME_SYNC_EVENT, handleThemeSync);
+    window.removeEventListener("storage", handleThemeSync);
+  };
+}
+
 export function usePersistedTheme(): [ThemeMode, (nextTheme: ThemeMode) => void] {
-  const [{ hasStoredPreference, theme }, setThemeState] = useState(
-    readThemePreference,
+  const theme = useSyncExternalStore<ThemeMode>(
+    subscribeToTheme,
+    getThemeSnapshot,
+    () => "dark" as ThemeMode,
   );
 
-  useEffect(() => {
-    if (hasStoredPreference) {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  const setTheme = (nextTheme: ThemeMode) => {
+    if (typeof window === "undefined") {
       return;
     }
 
-    window.localStorage.removeItem(THEME_STORAGE_KEY);
-
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    const syncSystemTheme = () => {
-      setThemeState((current) =>
-        current.hasStoredPreference
-          ? current
-          : { hasStoredPreference: false, theme: getSystemTheme() },
-      );
-    };
-
-    syncSystemTheme();
-    mediaQuery.addEventListener("change", syncSystemTheme);
-
-    return () => mediaQuery.removeEventListener("change", syncSystemTheme);
-  }, [hasStoredPreference, theme]);
-
-  const setTheme = (nextTheme: ThemeMode) => {
-    setThemeState({
-      hasStoredPreference: true,
-      theme: nextTheme,
-    });
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    window.dispatchEvent(new Event(THEME_SYNC_EVENT));
   };
 
   return [theme, setTheme];
@@ -112,9 +124,14 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="gitinsight-app" data-theme={theme}>
+    <div className="gitinsight-app flex min-h-screen flex-col" data-theme={theme}>
       <BackgroundLayers />
-      {children}
+      <div className="relative z-10 flex-1">{children}</div>
+      <footer className="relative z-10 border-t border-white/10 px-4 py-4 sm:px-6 lg:px-8">
+        <p className="mx-auto w-full max-w-370 text-center text-sm text-(--muted)">
+          AI can make mistakes. Please verify important information.
+        </p>
+      </footer>
     </div>
   );
 }
@@ -299,16 +316,32 @@ export function SkillRadar({ skills }: { skills: AnalysisData["skills"] }) {
     return { ...point, index };
   });
 
-  const describeSkillConfidence = (value: number) => {
-    if (value >= 75) {
-      return "Strong evidence";
+  const confidenceBands = [
+    { label: "No evidence", range: "0-24%" },
+    { label: "Limited evidence", range: "25-44%" },
+    { label: "Emerging evidence", range: "45-64%" },
+    { label: "Consistent evidence", range: "65-84%" },
+    { label: "Strong evidence", range: "85-100%" },
+  ] as const;
+
+  const describeSkillConfidence = (value: number): (typeof confidenceBands)[number] => {
+    if (value >= 85) {
+      return confidenceBands[4];
     }
 
-    if (value >= 55) {
-      return "Clear signal";
+    if (value >= 65) {
+      return confidenceBands[3];
     }
 
-    return "Needs more evidence";
+    if (value >= 45) {
+      return confidenceBands[2];
+    }
+
+    if (value >= 25) {
+      return confidenceBands[1];
+    }
+
+    return confidenceBands[0];
   };
 
   return (
@@ -397,44 +430,49 @@ export function SkillRadar({ skills }: { skills: AnalysisData["skills"] }) {
               {strongestSkill.label}
             </p>
           </div>
+
         </div>
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
-        {skills.map((skill, index) => (
-          <motion.div
-            key={skill.label}
-            initial={{ opacity: 0, y: 14 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, amount: 0.35 }}
-            transition={{
-              duration: 0.42,
-              delay: index * 0.06,
-              ease: [0.22, 1, 0.36, 1],
-            }}
-            className="gi-skill-card"
-          >
-            <div className="flex items-center justify-between gap-4">
-              <p className="text-base font-semibold tracking-[0.01em] text-(--foreground)">
-                {skill.label}
+        {skills.map((skill, index) => {
+          const confidence = describeSkillConfidence(skill.value);
+
+          return (
+            <motion.div
+              key={skill.label}
+              initial={{ opacity: 0, y: 14 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, amount: 0.35 }}
+              transition={{
+                duration: 0.42,
+                delay: index * 0.06,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+              className="gi-skill-card"
+            >
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-base font-semibold tracking-[0.01em] text-(--foreground)">
+                  {skill.label}
+                </p>
+                <p className="font-mono text-sm text-(--muted-strong)">{skill.value}%</p>
+              </div>
+
+              <div className="gi-skill-progress-track">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${skill.value}%` }}
+                  transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+                  className="gi-skill-progress-fill"
+                />
+              </div>
+
+              <p className="mt-3 text-sm text-(--muted)">
+                {confidence.label} ({confidence.range})
               </p>
-              <p className="font-mono text-sm text-(--muted-strong)">{skill.value}%</p>
-            </div>
-
-            <div className="gi-skill-progress-track">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${skill.value}%` }}
-                transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
-                className="gi-skill-progress-fill"
-              />
-            </div>
-
-            <p className="mt-3 text-sm text-(--muted)">
-              {describeSkillConfidence(skill.value)}
-            </p>
-          </motion.div>
-        ))}
+            </motion.div>
+          );
+        })}
       </div>
     </div>
   );

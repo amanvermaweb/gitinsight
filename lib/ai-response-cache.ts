@@ -3,7 +3,7 @@ import { isRedisRestConfigured, runRedisCommand } from "@/lib/redis-rest";
 
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_CACHE_MAX_ENTRIES = 2_000;
-const DEFAULT_AI_PROMPT_VERSION = "v3";
+const DEFAULT_AI_PROMPT_VERSION = "v4";
 const REDIS_CACHE_PREFIX = "analyze:ai-feedback:";
 
 type CacheRecord = {

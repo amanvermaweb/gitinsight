@@ -10,6 +10,44 @@ const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const DEFAULT_SUMMARY_SENTENCE =
   "Evidence is mixed and should be interpreted as a portfolio signal, not a full codebase audit.";
 
+function scoreVerdict(score: number) {
+  if (score < 5.5) {
+    return "well below the hiring bar for production engineering roles";
+  }
+
+  if (score < 6.8) {
+    return "below the hiring bar for most mid-level product engineering roles";
+  }
+
+  if (score < 7.6) {
+    return "borderline and currently not competitive without targeted fixes";
+  }
+
+  if (score < 8.5) {
+    return "competitive but still held back by clear risk areas";
+  }
+
+  return "competitive for senior-level review loops";
+}
+
+function needsBluntSummary(score: number, summary: string) {
+  if (score >= 7.6) {
+    return false;
+  }
+
+  const normalized = summary.toLowerCase();
+  const bluntSignals = [
+    "below the hiring bar",
+    "not competitive",
+    "weak profile",
+    "fails",
+    "high-risk",
+    "material gap",
+  ];
+
+  return !bluntSignals.some((signal) => normalized.includes(signal));
+}
+
 function normalizeText(value: unknown, fallback: string) {
   if (typeof value !== "string") {
     return fallback;
@@ -101,23 +139,24 @@ function buildDeterministicFallback(analysis: AnalysisData): AiFeedback {
     .slice(-2)
     .map((metric) => `${metric.label} ${metric.value}/10`)
     .join(" and ");
+  const verdict = scoreVerdict(analysis.score);
 
   return {
-    summary: `${analysis.username} scores ${analysis.score}/10 overall, with ${strongestMetric.label} strongest at ${strongestMetric.value}/10 and ${weakestMetric.label} weakest at ${weakestMetric.value}/10. The portfolio shows clear execution evidence, but hiring risk remains concentrated in ${lowMetrics || "the lower-scoring dimensions"}.`,
+    summary: `${analysis.username} scores ${analysis.score}/10 and is ${verdict}. The biggest liabilities are ${lowMetrics || "the two lowest-scoring dimensions"}, with ${weakestMetric.label} as the primary blocker at ${weakestMetric.value}/10.`,
     strengths: [
-      `${strongestMetric.label} is a measurable strength at ${strongestMetric.value}/10 across ${analysis.repositoriesAnalyzed} analyzed repositories.`,
-      `Top repository signal is ${strongestRepo?.name ?? "the featured repo"} with quality ${strongestRepo?.quality ?? analysis.score}/10 and ${strongestRepo?.stars ?? 0} stars.`,
-      `Public traction across analyzed repositories is non-trivial with ${analysis.totalStars} combined stars and ${analysis.followers} followers backing the portfolio footprint.`,
+      `${strongestMetric.label} is the only clear bright spot at ${strongestMetric.value}/10 across ${analysis.repositoriesAnalyzed} analyzed repositories.`,
+      `${strongestRepo?.name ?? "Top featured repo"} leads with quality ${strongestRepo?.quality ?? analysis.score}/10 and ${strongestRepo?.stars ?? 0} stars; the rest of the portfolio trails behind it.`,
+      `${analysis.totalStars} total stars and ${analysis.followers} followers indicate visible output, but visibility does not offset weak execution metrics in lower-scoring categories.`,
     ],
     weaknesses: [
-      `${weakestMetric.label} is the primary gap at ${weakestMetric.value}/10, which can lower reviewer confidence in production readiness.`,
-      `Lowest-quality featured repository is ${weakestRepo?.name ?? "one featured repo"} at quality ${weakestRepo?.quality ?? analysis.score}/10 and should be hardened first.`,
-      `Current evidence is repository-weighted; without stronger tests, observability notes, and reliability proofs, risk remains under-quantified.`,
+      `${weakestMetric.label} is a hard blocker at ${weakestMetric.value}/10 and will trigger rejection in most technical screens if left unresolved.`,
+      `${weakestRepo?.name ?? "The weakest featured repo"} sits at quality ${weakestRepo?.quality ?? analysis.score}/10, which is not production-grade evidence for hiring decisions.`,
+      "Missing test strategy, observability proof, and incident-readiness evidence creates delivery and reliability risk that reviewers cannot ignore.",
     ],
     suggestions: [
-      `Raise ${weakestMetric.label} by shipping a repeatable checklist (tests, monitoring notes, rollback path) across the top 3 repositories in the next iteration.`,
-      `Start with ${weakestRepo?.name ?? "the weakest featured repo"}: add architecture diagram, operational runbook, and measurable outcome section in the README.`,
-      "Publish a concise release log for flagship repos (changes, risk, verification) so reviewers can see engineering decision quality, not just commit volume.",
+      `Fix ${weakestMetric.label} first: implement tests, monitoring notes, and rollback instructions in the top 3 repositories before adding new projects.`,
+      `Start with ${weakestRepo?.name ?? "the weakest featured repo"}: ship a concrete remediation pass (failing test coverage gaps, runbook, and benchmark or reliability evidence).`,
+      "Publish release notes with risk, verification, and post-deploy outcomes so reviewers can evaluate engineering judgment instead of repository volume.",
     ],
   };
 }
@@ -145,7 +184,8 @@ function ensureFeedbackQuality(feedback: AiFeedback, analysis: AnalysisData): Ai
     !summaryHasEvidence ||
     summarySentences.length < 2 ||
     strengthsGenericCount >= 2 ||
-    weaknessesGenericCount >= 1
+    weaknessesGenericCount >= 1 ||
+    needsBluntSummary(analysis.score, feedback.summary)
   ) {
     return buildDeterministicFallback(analysis);
   }
@@ -161,13 +201,14 @@ function ensureFeedbackQuality(feedback: AiFeedback, analysis: AnalysisData): Ai
 }
 
 function parseAiFeedback(raw: string, baseline: AnalysisData): AiFeedback {
+  const strictFallback = buildDeterministicFallback(baseline);
   const parsed = JSON.parse(extractJsonObject(raw)) as Record<string, unknown>;
 
   const normalized = {
-    summary: normalizeText(parsed.summary, baseline.summary),
-    strengths: normalizeList(parsed.strengths, baseline.strengths),
-    weaknesses: normalizeList(parsed.weaknesses, baseline.weaknesses),
-    suggestions: normalizeList(parsed.suggestions, baseline.suggestions),
+    summary: normalizeText(parsed.summary, strictFallback.summary),
+    strengths: normalizeList(parsed.strengths, strictFallback.strengths),
+    weaknesses: normalizeList(parsed.weaknesses, strictFallback.weaknesses),
+    suggestions: normalizeList(parsed.suggestions, strictFallback.suggestions),
   };
 
   return ensureFeedbackQuality(normalized, baseline);
@@ -208,7 +249,7 @@ export async function generateAiFeedback(
     "Default stance: risk-first review. Be stricter on weaknesses than strengths.",
     "Return STRICT JSON only with keys: summary, strengths, weaknesses, suggestions.",
     "Rules:",
-    "- summary: 2-3 sentences; lead with the top technical risks, then briefly acknowledge strengths.",
+    "- summary: 2-3 sentences; lead with technical risks and hiring decision impact.",
     "- strengths: array of exactly 3 concise bullets focused on technical execution; keep each short and evidence-backed.",
     "- weaknesses: array of exactly 3 concise bullets focused on technical gaps and risks; each must be more specific than strengths.",
     "- suggestions: array of exactly 3 concrete, high-impact technical actions with implementation direction.",
@@ -218,6 +259,9 @@ export async function generateAiFeedback(
     "- Weaknesses and suggestions together should carry most of the analytical weight.",
     "- Do not balance criticism with compliments; prioritize what could fail in production or during scale.",
     "- If evidence is limited, state uncertainty directly instead of praising.",
+    "- Be direct and blunt. Do not soften language with politeness or motivational framing.",
+    "- If score is below 7.6, explicitly state the profile is below the hiring bar or not competitive.",
+    "- If score is below 6.8, clearly state this profile would likely be rejected in most technical screens today.",
     "- Avoid generic career advice and avoid soft-skill commentary.",
     "- Avoid generic praise words like 'great', 'excellent', 'impressive', 'outstanding', or 'strong' unless followed by concrete evidence.",
     "- Avoid markdown, numbering, and any keys outside the required schema.",
@@ -230,7 +274,7 @@ export async function generateAiFeedback(
     contents: prompt,
     config: {
       responseMimeType: "application/json",
-      temperature: 0.35,
+      temperature: 0.2,
     },
   });
 

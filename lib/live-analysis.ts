@@ -296,6 +296,10 @@ function scoreToPercentile(score: number) {
   return clamp(Math.round(24 - score * 1.95), 5, 19);
 }
 
+function toPercent(value: number) {
+  return Math.round(clamp(value, 0, 1) * 100);
+}
+
 export async function buildLiveAnalysis(
   username: string,
   apiKey: string,
@@ -481,29 +485,33 @@ export async function buildLiveAnalysis(
     {
       label: "Code quality",
       value: codeQuality,
-      note: "Live repo structure and maintenance signals indicate generally healthy engineering discipline.",
+      note: `Average featured-repo quality is ${averageRepoQuality.toFixed(1)}/10, and ${toPercent(recentCoverage)}% of analyzed repositories were updated in the last 120 days.`,
     },
     {
       label: "Documentation",
       value: documentation,
-      note: "README and project framing quality measured from public repository documentation depth.",
+      note: `${toPercent(readmeCoverage)}% of featured repositories have substantive README coverage and ${toPercent(descriptionCoverage)}% include clear project descriptions.`,
     },
     {
       label: "Project originality",
       value: originality,
-      note: "Language diversity, repo composition, and recency patterns suggest originality and technical range.",
+      note: `${languageTotals.size} languages are represented across top repositories, with a language-diversity factor of ${toPercent(uniqueLanguageFactor)}%.`,
     },
     {
       label: "Open source activity",
       value: openSourceActivity,
-      note: "Recent push activity and sustained update cadence signal active and visible development output.",
+      note: `${pushEvents.length} recent public push events were observed, and activity density scores ${toPercent(activityDensity)}% against the current benchmark window.`,
     },
     {
       label: "Portfolio completeness",
       value: portfolioCompleteness,
-      note: "Project descriptions, readme quality, and deploy links indicate overall portfolio readiness.",
+      note: `${toPercent(homepageCoverage)}% of analyzed repositories expose demo/homepage links, and README coverage currently sits at ${toPercent(readmeCoverage)}%.`,
     },
   ];
+
+  const breakdownByScore = [...breakdown].sort((first, second) => second.value - first.value);
+  const strongestMetric = breakdownByScore[0] ?? breakdown[0];
+  const weakestMetric = breakdownByScore[breakdownByScore.length - 1] ?? breakdown[breakdown.length - 1];
 
   const score = roundToTenth(average(breakdown.map((metric) => metric.value)));
 
@@ -513,7 +521,16 @@ export async function buildLiveAnalysis(
       0,
     );
     const share = bytes / totalLanguageBytes;
-    const value = clamp(Math.round(42 + share * 80 + activityDensity * 8), 38, 95);
+    const matchedLanguageCount = langs.filter(
+      (language) => (languageTotals.get(language) ?? 0) > 0,
+    ).length;
+    const coverage = matchedLanguageCount / Math.max(1, langs.length);
+    const normalizedShare = clamp(share / 0.55, 0, 1);
+    const value = clamp(
+      Math.round(18 + normalizedShare * 52 + coverage * 22 + activityDensity * 8),
+      18,
+      95,
+    );
 
     return {
       label,
@@ -558,10 +575,10 @@ export async function buildLiveAnalysis(
     benchmarkDelta: `Top ${scoreToPercentile(score)}% of public technical portfolios`,
     headline:
       score >= 8.4
-        ? "High-signal engineering portfolio with strong public execution evidence."
-        : "Solid technical portfolio with clear upside in presentation and polish.",
+        ? `High-signal portfolio with ${toPercent(recentCoverage)}% of analyzed repositories recently active and ${languageTotals.size} languages represented.`
+        : `Technical portfolio with credible execution evidence, with the largest upside in documentation depth and deployment coverage (${toPercent(homepageCoverage)}% linked).`,
     summary:
-      "Live GitHub signals suggest a credible engineering profile with practical depth. The highest leverage improvements are clearer storytelling and stronger consistency across repository documentation.",
+      `${user.login} scored ${score}/10 from ${analyzedRepos.length} analyzed repositories and ${pushEvents.length} recent push events. The strongest measurable signal is ${strongestMetric?.label ?? "code quality"}, while the lowest-scoring area is ${weakestMetric?.label ?? "portfolio completeness"} and should be prioritized in the next iteration.`,
     highlights: [
       `Analyzed ${analyzedRepos.length} top repositories and ${pushEvents.length} recent public push events.`,
       `${readmeCoverage >= 0.7 ? "Strong" : "Moderate"} README coverage across featured repositories.`,

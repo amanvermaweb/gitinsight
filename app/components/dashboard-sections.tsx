@@ -198,6 +198,32 @@ export function HeroSection({
 }
 
 export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
+  const describeMetricConfidence = (value: number) => {
+    if (value >= 8.6) {
+      return "Very high";
+    }
+
+    if (value >= 7.6) {
+      return "High";
+    }
+
+    if (value >= 6.7) {
+      return "Moderate";
+    }
+
+    return "Emerging";
+  };
+
+  const firstActivityValue = analysis.activity[0]?.value ?? 0;
+  const lastActivityValue = analysis.activity[analysis.activity.length - 1]?.value ?? 0;
+  const activityDelta = lastActivityValue - firstActivityValue;
+  const activityHeadline =
+    activityDelta >= 8
+      ? "Contribution velocity is trending up across the last 7 months."
+      : activityDelta <= -8
+        ? "Contribution velocity softened recently and needs consistency."
+        : "Contribution velocity is stable across the last 7 months.";
+
   return (
     <section className="space-y-8">
       <SectionHeading
@@ -328,7 +354,7 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
                 Contribution velocity
               </p>
               <h3 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-(--foreground)">
-                Output quality is improving month over month.
+                {activityHeadline}
               </h3>
             </div>
             <div className="rounded-full border border-white/8 bg-white/6 px-3 py-2 font-mono text-[0.72rem] uppercase tracking-[0.2em] text-(--muted)">
@@ -367,7 +393,9 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
               <div key={metric.label} className="space-y-2">
                 <div className="flex min-w-0 items-center justify-between gap-4">
                   <p className="min-w-0 flex-1 text-sm font-medium wrap-break-word text-(--foreground)">{metric.label}</p>
-                  <p className="font-mono text-sm text-(--muted)">Confidence high</p>
+                  <p className="font-mono text-sm text-(--muted)">
+                    {describeMetricConfidence(metric.value)} confidence ({metric.value.toFixed(1)}/10)
+                  </p>
                 </div>
                 <p className="text-sm leading-6 wrap-break-word text-(--muted)">{metric.note}</p>
               </div>
@@ -473,19 +501,29 @@ export function RepositoryInsightsSection({
                   <p className="text-sm text-(--muted)">7 weeks</p>
                 </div>
                 <div className="mt-4 grid grid-cols-7 gap-2">
-                  {repository.velocity.map((value, velocityIndex) => (
-                    <div
-                      key={`${repository.name}-${velocityIndex}`}
-                      className="flex flex-col items-center gap-2"
-                    >
-                      <div className="flex h-18 w-full items-end rounded-full bg-white/6 p-1.5">
-                        <div
-                          className="w-full rounded-full bg-[linear-gradient(180deg,var(--accent-strong),rgba(255,255,255,0.12))]"
-                          style={{ height: `${value * 8}%` }}
-                        />
+                  {repository.velocity.map((value, velocityIndex) => {
+                    const normalizedVelocity = Math.min(
+                      Math.max((value - 2) / 10, 0),
+                      1,
+                    );
+                    const translateY = (1 - normalizedVelocity) * 78;
+
+                    return (
+                      <div
+                        key={`${repository.name}-${velocityIndex}`}
+                        className="flex flex-col items-center gap-2"
+                      >
+                        <div className="h-18 w-full rounded-full bg-white/6 p-1.5">
+                          <div className="relative h-full w-full overflow-hidden rounded-full">
+                            <div
+                              className="absolute inset-0 rounded-full bg-[linear-gradient(180deg,var(--accent-strong),rgba(255,255,255,0.12))]"
+                              style={{ transform: `translateY(${translateY}%)` }}
+                            />
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
