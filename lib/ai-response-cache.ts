@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import type { AiFeedback } from "@/lib/ai-feedback";
 import { isRedisRestConfigured, runRedisCommand } from "@/lib/redis-rest";
+import type { AnalysisData } from "@/lib/types";
 
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_CACHE_MAX_ENTRIES = 2_000;
-const DEFAULT_AI_PROMPT_VERSION = "v4";
+const DEFAULT_AI_PROMPT_VERSION = "v6";
 const REDIS_CACHE_PREFIX = "analyze:ai-feedback:";
 
 type CacheRecord = {
@@ -41,7 +43,31 @@ function getCacheMaxEntries() {
   );
 }
 
-function normalizeCacheKey(username: string) {
+function buildAnalysisFingerprint(analysis: AnalysisData) {
+  const payload = {
+    score: analysis.score,
+    repositoriesAnalyzed: analysis.repositoriesAnalyzed,
+    breakdown: analysis.breakdown.map((metric) => ({
+      label: metric.label,
+      value: metric.value,
+    })),
+    repositories: analysis.repositories.slice(0, 6).map((repo) => ({
+      name: repo.name,
+      stars: repo.stars,
+      commits: repo.commits,
+      quality: repo.quality,
+      stack: repo.stack,
+    })),
+    skills: analysis.skills,
+  };
+
+  return createHash("sha256")
+    .update(JSON.stringify(payload))
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function normalizeCacheKey(username: string, analysis: AnalysisData) {
   const normalized = username.trim().toLowerCase();
   const promptVersion = process.env.ANALYZE_AI_PROMPT_VERSION?.trim() || DEFAULT_AI_PROMPT_VERSION;
 
@@ -49,7 +75,7 @@ function normalizeCacheKey(username: string) {
     return "";
   }
 
-  return `${promptVersion}:${normalized}`;
+  return `${promptVersion}:${normalized}:${buildAnalysisFingerprint(analysis)}`;
 }
 
 function getRedisCacheKey(username: string) {
@@ -74,12 +100,28 @@ function isAiFeedback(value: unknown): value is AiFeedback {
   }
 
   const payload = value as Record<string, unknown>;
+  const strengths = payload.strengths;
+  const weaknesses = payload.weaknesses;
+  const suggestions = payload.suggestions;
+  const score = payload.score;
+  const confidence = payload.confidence;
+
+  const hasStringItems = (items: unknown) =>
+    Array.isArray(items) &&
+    items.length >= 3 &&
+    items.length <= 5 &&
+    items.every((item) => typeof item === "string" && item.trim().length > 0);
+
+  const isBoundedNumber = (entry: unknown, min: number, max: number) =>
+    typeof entry === "number" && Number.isFinite(entry) && entry >= min && entry <= max;
 
   return (
     typeof payload.summary === "string" &&
-    Array.isArray(payload.strengths) &&
-    Array.isArray(payload.weaknesses) &&
-    Array.isArray(payload.suggestions)
+    hasStringItems(strengths) &&
+    hasStringItems(weaknesses) &&
+    hasStringItems(suggestions) &&
+    isBoundedNumber(score, 0, 10) &&
+    isBoundedNumber(confidence, 0, 1)
   );
 }
 
@@ -100,15 +142,14 @@ function pruneExpiredEntries(now: number) {
 }
 
 export function configureAiFeedbackCacheAdapter(adapter: AiFeedbackCacheAdapter | null) {
-  // This hook allows plugging in a distributed cache (e.g. Upstash Redis)
-  // without changing the API route implementation.
   distributedCacheAdapter = adapter;
 }
 
 export async function getCachedAiFeedback(
   username: string,
+  analysis: AnalysisData,
 ): Promise<AiFeedback | null> {
-  const key = normalizeCacheKey(username);
+  const key = normalizeCacheKey(username, analysis);
 
   if (!key) {
     return null;
@@ -133,7 +174,6 @@ export async function getCachedAiFeedback(
 
       return isAiFeedback(parsed) ? parsed : null;
     } catch {
-      // Local cache fallback keeps behavior stable even if Redis is degraded.
     }
   }
 
@@ -154,8 +194,12 @@ export async function getCachedAiFeedback(
   return record.value;
 }
 
-export async function setCachedAiFeedback(username: string, value: AiFeedback) {
-  const key = normalizeCacheKey(username);
+export async function setCachedAiFeedback(
+  username: string,
+  value: AiFeedback,
+  analysis: AnalysisData,
+) {
+  const key = normalizeCacheKey(username, analysis);
 
   if (!key) {
     return;
@@ -179,7 +223,6 @@ export async function setCachedAiFeedback(username: string, value: AiFeedback) {
       ]);
       return;
     } catch {
-      // Local cache fallback keeps writes available if Redis is unavailable.
     }
   }
 

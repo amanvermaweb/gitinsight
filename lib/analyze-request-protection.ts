@@ -38,7 +38,6 @@ type CooldownBucket = {
   lastRequestAt: number;
 };
 
-// This in-memory state is only used as a local fallback when Redis is not configured.
 const cooldownBuckets = new Map<string, CooldownBucket>();
 let cooldownChecksSincePrune = 0;
 
@@ -229,7 +228,6 @@ async function enforceAnalyzeRequestProtectionDistributed(
 
     headers.set("Retry-After", String(retryAfterSeconds));
 
-    // Rate-limited requests should not also hold a cooldown token.
     await runRedisCommand(["DEL", cooldownKey]);
 
     return {
@@ -296,7 +294,6 @@ function enforceAnalyzeRequestProtectionLocal(
     };
   }
 
-  // Cooldown should only advance for requests that pass all limit checks.
   recordRequestForCooldown(cooldownKey);
 
   return {
@@ -316,7 +313,6 @@ export async function enforceAnalyzeRequestProtection(
     try {
       return await enforceAnalyzeRequestProtectionDistributed(clientIp);
     } catch {
-      // Fail open to local in-memory controls if Redis is unavailable.
       return enforceAnalyzeRequestProtectionLocal(clientIp);
     }
   }

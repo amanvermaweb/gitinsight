@@ -3,6 +3,7 @@ export type ThemeMode = "dark" | "light";
 export type AnalysisData = {
   username: string;
   score: number;
+  confidence: number;
   followers: number;
   totalStars: number;
   repositoriesAnalyzed: number;

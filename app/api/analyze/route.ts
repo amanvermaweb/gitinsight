@@ -1,5 +1,9 @@
 import { NextRequest } from "next/server";
-import { generateAiFeedback, type AiFeedback } from "@/lib/ai-feedback";
+import {
+  buildDeterministicAiFeedback,
+  generateAiFeedback,
+  type AiFeedback,
+} from "@/lib/ai-feedback";
 import { getCachedAiFeedback, setCachedAiFeedback } from "@/lib/ai-response-cache";
 import {
   enforceAnalyzeRequestProtection,
@@ -14,11 +18,18 @@ type AnalyzeRequestBody = {
   username?: string;
 };
 
+function scoreToPercentile(score: number) {
+  return Math.max(5, Math.min(19, Math.round(24 - score * 1.95)));
+}
+
 function applyAiFeedback(analysis: AnalysisData, feedback: AiFeedback) {
   analysis.summary = feedback.summary;
   analysis.strengths = feedback.strengths;
   analysis.weaknesses = feedback.weaknesses;
   analysis.suggestions = feedback.suggestions;
+  analysis.score = feedback.score;
+  analysis.confidence = feedback.confidence;
+  analysis.benchmarkDelta = `Top ${scoreToPercentile(feedback.score)}% of public technical portfolios`;
 }
 
 export async function POST(request: NextRequest) {
@@ -73,23 +84,26 @@ export async function POST(request: NextRequest) {
 
   try {
     const analysis = await buildLiveAnalysis(username, githubToken);
-    const cachedAiFeedback = await getCachedAiFeedback(username);
+    const cachedAiFeedback = await getCachedAiFeedback(username, analysis);
     let usedCachedAiFeedback = false;
+    let warning: string | undefined;
 
     if (cachedAiFeedback) {
       applyAiFeedback(analysis, cachedAiFeedback);
       usedCachedAiFeedback = true;
     } else {
+      let aiFeedback: AiFeedback;
+
       try {
-        const aiFeedback = await generateAiFeedback(analysis, aiApiKey);
-        applyAiFeedback(analysis, aiFeedback);
-        await setCachedAiFeedback(username, aiFeedback);
+        aiFeedback = await generateAiFeedback(analysis, aiApiKey);
+        await setCachedAiFeedback(username, aiFeedback, analysis);
       } catch {
-        return jsonError("AI analysis generation failed. Please try again later.", {
-          status: 502,
-          headers: protection.headers,
-        });
+        aiFeedback = buildDeterministicAiFeedback(analysis);
+        warning =
+          "AI provider is temporarily unavailable. Returned deterministic system feedback.";
       }
+
+      applyAiFeedback(analysis, aiFeedback);
     }
 
     return jsonSuccess(
@@ -97,6 +111,7 @@ export async function POST(request: NextRequest) {
         source: "github",
         analysis,
         cachedAi: usedCachedAiFeedback,
+        warning,
       },
       {
         status: 200,

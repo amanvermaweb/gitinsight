@@ -19,6 +19,41 @@ const REDIS_REST_TOKEN =
   process.env.KV_REST_API_TOKEN?.trim() ??
   process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ??
   "";
+const DEFAULT_REDIS_TIMEOUT_MS = 3_000;
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+
+  return value;
+}
+
+function getRedisTimeoutMs() {
+  return parsePositiveIntegerEnv("ANALYZE_REDIS_TIMEOUT_MS", DEFAULT_REDIS_TIMEOUT_MS);
+}
+
+async function fetchRedisWithTimeout(url: string, init: RequestInit) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), getRedisTimeoutMs());
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Redis request timed out.");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
 
 function getRequestHeaders() {
   return {
@@ -38,7 +73,7 @@ export async function runRedisCommand<T>(
     return null;
   }
 
-  const response = await fetch(REDIS_REST_URL, {
+  const response = await fetchRedisWithTimeout(REDIS_REST_URL, {
     method: "POST",
     headers: getRequestHeaders(),
     body: JSON.stringify(command),
@@ -69,7 +104,7 @@ export async function runRedisPipeline(
     return [];
   }
 
-  const response = await fetch(`${REDIS_REST_URL}/pipeline`, {
+  const response = await fetchRedisWithTimeout(`${REDIS_REST_URL}/pipeline`, {
     method: "POST",
     headers: getRequestHeaders(),
     body: JSON.stringify(commands),

@@ -1,51 +1,98 @@
 import { GoogleGenAI } from "@google/genai";
 import type { AnalysisData } from "@/lib/types";
+import { clamp, roundToTenth } from "@/lib/utils";
 
-export type AiFeedback = Pick<
+type AiQualitativeFeedback = Pick<
   AnalysisData,
   "summary" | "strengths" | "weaknesses" | "suggestions"
 >;
 
+export type AiFeedback = AiQualitativeFeedback &
+  Pick<AnalysisData, "score" | "confidence">;
+
+export type ScoringFlags = {
+  hasCloneProjects: boolean;
+  frontendHeavy: boolean;
+  hasBackend: boolean;
+  hasDevOps: boolean;
+  shallowCommits: boolean;
+  hasRealWorldUsage: boolean;
+  poorDocumentation: boolean;
+};
+
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
-const DEFAULT_SUMMARY_SENTENCE =
-  "Evidence is mixed and should be interpreted as a portfolio signal, not a full codebase audit.";
+const DEFAULT_AI_TIMEOUT_MS = 12_000;
+const DEFAULT_SUMMARY =
+  "Evidence is limited, architecture depth is unclear, and hiring risk remains high without stronger operational proof.";
 
-function scoreVerdict(score: number) {
-  if (score < 5.5) {
-    return "well below the hiring bar for production engineering roles";
+const SCORING = {
+  penalties: {
+    clonePerProject: 1.5,
+    cloneMax: 3,
+    frontendHeavy: 2,
+    shallow: 1,
+    noBackend: 2,
+    noCICD: 1,
+    poorDocs: 1,
+  },
+  bonuses: {
+    backend: 1.5,
+    complexity: 1,
+    consistency: 1,
+    realWorld: 1.5,
+  },
+  weights: {
+    baselineModel: 0.55,
+    baselineRepo: 0.45,
+    top1: 0.4,
+    top3Total: 0.7,
+    remaining: 0.3,
+  },
+  thresholds: {
+    shallowAvgCommits: 20,
+    shallowReposAnalyzed: 3,
+    strongBackendSkill: 55,
+    frontendDominanceGap: 20,
+    poorDocsRatio: 0.5,
+    nonTrivialRepoQuality: 7,
+    nonTrivialRepoCommits: 20,
+  },
+} as const;
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    return fallback;
   }
 
-  if (score < 6.8) {
-    return "below the hiring bar for most mid-level product engineering roles";
-  }
-
-  if (score < 7.6) {
-    return "borderline and currently not competitive without targeted fixes";
-  }
-
-  if (score < 8.5) {
-    return "competitive but still held back by clear risk areas";
-  }
-
-  return "competitive for senior-level review loops";
+  return value;
 }
 
-function needsBluntSummary(score: number, summary: string) {
-  if (score >= 7.6) {
-    return false;
+function getAiTimeoutMs() {
+  return parsePositiveIntegerEnv("ANALYZE_AI_TIMEOUT_MS", DEFAULT_AI_TIMEOUT_MS);
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error("AI request timed out."));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([task, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
   }
-
-  const normalized = summary.toLowerCase();
-  const bluntSignals = [
-    "below the hiring bar",
-    "not competitive",
-    "weak profile",
-    "fails",
-    "high-risk",
-    "material gap",
-  ];
-
-  return !bluntSignals.some((signal) => normalized.includes(signal));
 }
 
 function normalizeText(value: unknown, fallback: string) {
@@ -66,9 +113,9 @@ function normalizeList(value: unknown, fallback: string[]) {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim().replace(/\s+/g, " "))
     .filter(Boolean)
-    .slice(0, 3);
+    .slice(0, 5);
 
-  return cleaned.length >= 2 ? cleaned : fallback;
+  return cleaned.length >= 3 ? cleaned : fallback;
 }
 
 function extractJsonObject(raw: string) {
@@ -88,40 +135,299 @@ function extractJsonObject(raw: string) {
   return trimmed;
 }
 
-function deriveSpecificSignals(analysis: AnalysisData) {
-  const repositoryNames = analysis.repositories
-    .slice(0, 6)
-    .map((repository) => repository.name.toLowerCase());
-  const metricLabels = analysis.breakdown.map((metric) => metric.label.toLowerCase());
-
-  return [...repositoryNames, ...metricLabels, analysis.username.toLowerCase()];
+function metricValue(analysis: AnalysisData, label: string) {
+  return (
+    analysis.breakdown.find((metric) => metric.label.toLowerCase() === label.toLowerCase())
+      ?.value ?? analysis.score
+  );
 }
 
-function looksGenericLine(line: string, specificSignals: string[]) {
-  const normalized = line.toLowerCase();
-  const genericPraiseTokens = [
-    "great",
-    "excellent",
-    "impressive",
-    "strong",
-    "solid",
-    "well done",
-    "outstanding",
-    "notable",
-    "high-trust",
-  ];
-  const containsGenericPraise = genericPraiseTokens.some((token) =>
-    normalized.includes(token),
+function skillValue(analysis: AnalysisData, label: string) {
+  return (
+    analysis.skills.find((skill) => skill.label.toLowerCase() === label.toLowerCase())
+      ?.value ?? 0
   );
-  const hasNumber = /\d/.test(normalized);
-  const hasSpecificSignal = specificSignals.some((signal) =>
-    signal.length > 2 ? normalized.includes(signal) : false,
-  );
-
-  return containsGenericPraise && !hasNumber && !hasSpecificSignal;
 }
 
-function buildDeterministicFallback(analysis: AnalysisData): AiFeedback {
+function averageRepoCommits(analysis: AnalysisData) {
+  return (
+    analysis.repositories.reduce((sum, repo) => sum + repo.commits, 0) /
+    Math.max(1, analysis.repositories.length)
+  );
+}
+
+function repositoryCorpus(repo: AnalysisData["repositories"][number]) {
+  return [repo.name, ...repo.stack, repo.readme, repo.recommendation, repo.note]
+    .join(" ")
+    .toLowerCase();
+}
+
+function portfolioCorpus(analysis: AnalysisData) {
+  const breakdownText = analysis.breakdown
+    .map((metric) => `${metric.label} ${metric.note}`)
+    .join(" ")
+    .toLowerCase();
+  const repositoryText = analysis.repositories
+    .map((repo) => repositoryCorpus(repo))
+    .join(" ");
+
+  return [
+    analysis.headline,
+    analysis.summary,
+    analysis.highlights.join(" "),
+    breakdownText,
+    repositoryText,
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+function sentenceHasPositiveSignal(sentence: string, keywordPattern: RegExp) {
+  if (!keywordPattern.test(sentence)) {
+    return false;
+  }
+
+  const negationPattern = /(missing|lack|lacks|few|none|without|needs\b|need\b|add\b|absent)/i;
+  return !negationPattern.test(sentence);
+}
+
+function countCloneProjects(analysis: AnalysisData) {
+  const clonePattern =
+    /(clone|netflix|spotify|youtube|amazon|twitter|instagram|whatsapp|discord|airbnb)/i;
+
+  return analysis.repositories.filter((repo) => clonePattern.test(repo.name)).length;
+}
+
+function hasBackendSignals(analysis: AnalysisData) {
+  const backendSkill = skillValue(analysis, "Backend");
+  const backendStackPattern =
+    /(go|rust|java|python|ruby|php|c#|kotlin|node|express|sql|postgres|mysql|mongodb)/i;
+  const dbPattern =
+    /(sql|postgres|mysql|sqlite|mongo|redis|prisma|typeorm|sequelize|orm|schema|migration)/i;
+  const apiPattern = /(api|rest|graphql|endpoint|route|controller)/i;
+  const authPattern = /(auth|authentication|authorization|oauth|jwt|session|role|permission)/i;
+  const middlewarePattern = /(middleware|queue|worker|cache|throttle|rate limit|webhook)/i;
+
+  const meaningfulBackendRepos = analysis.repositories.filter((repo) => {
+    const text = repositoryCorpus(repo);
+    const signalCount = [
+      dbPattern.test(text),
+      apiPattern.test(text),
+      authPattern.test(text),
+      middlewarePattern.test(text),
+      repo.stack.some((entry) => backendStackPattern.test(entry.toLowerCase())),
+    ].filter(Boolean).length;
+
+    return signalCount >= 2;
+  }).length;
+
+  return (
+    backendSkill >= SCORING.thresholds.strongBackendSkill ||
+    meaningfulBackendRepos >= 1
+  );
+}
+
+function hasTestingSignals(analysis: AnalysisData) {
+  const testingPattern = /(test|coverage|unit test|integration test|e2e|playwright|jest|vitest)/i;
+  return testingPattern.test(portfolioCorpus(analysis));
+}
+
+function hasDevOpsSignals(analysis: AnalysisData) {
+  const devopsPattern =
+    /(ci|cd|pipeline|github actions|workflow|docker|kubernetes|helm|terraform|deploy|deployment|release|monitoring|observability|sentry)/i;
+
+  return devopsPattern.test(portfolioCorpus(analysis));
+}
+
+function hasRealWorldUsageSignals(analysis: AnalysisData) {
+  const evidencePattern =
+    /(https?:\/\/|live|production|deployed|deployment|demo|vercel|netlify|render|railway|cloudflare|aws|gcp|azure|uptime|users)/i;
+
+  const sentences = portfolioCorpus(analysis)
+    .split(/[.!?\n]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  const sentenceSignal = sentences.some((sentence) =>
+    sentenceHasPositiveSignal(sentence, evidencePattern),
+  );
+  const completenessSignal = metricValue(analysis, "Portfolio completeness") >= 7;
+
+  return sentenceSignal || completenessSignal;
+}
+
+function hasPoorDocumentationSignals(analysis: AnalysisData) {
+  const weakReadmePattern = /(minimal|does not yet|needs stronger|unclear|missing)/i;
+  const weakRepoRatio =
+    analysis.repositories.filter((repo) => weakReadmePattern.test(repo.readme)).length /
+    Math.max(1, analysis.repositories.length);
+  const docsMetric = metricValue(analysis, "Documentation");
+
+  return weakRepoRatio >= SCORING.thresholds.poorDocsRatio || docsMetric < 7;
+}
+
+function isFrontendHeavyLogicLight(analysis: AnalysisData) {
+  const frontendSkill = skillValue(analysis, "Frontend");
+  const backendSkill = skillValue(analysis, "Backend");
+  const devOpsSkill = skillValue(analysis, "DevOps");
+
+  return (
+    frontendSkill >= backendSkill + SCORING.thresholds.frontendDominanceGap &&
+    frontendSkill >= devOpsSkill + SCORING.thresholds.frontendDominanceGap
+  );
+}
+
+function hasShallowContributionSignals(analysis: AnalysisData) {
+  return (
+    averageRepoCommits(analysis) < SCORING.thresholds.shallowAvgCommits ||
+    analysis.repositoriesAnalyzed < SCORING.thresholds.shallowReposAnalyzed
+  );
+}
+
+function computeWeightedRepositoryScore(analysis: AnalysisData) {
+  const sorted = [...analysis.repositories]
+    .map((repo) => repo.quality)
+    .sort((a, b) => b - a);
+
+  if (!sorted.length) {
+    return analysis.score;
+  }
+
+  if (sorted.length === 1) {
+    return sorted[0];
+  }
+
+  const top23Weight = (SCORING.weights.top3Total - SCORING.weights.top1) / 2;
+  const top1 = sorted[0] * SCORING.weights.top1;
+  const second = (sorted[1] ?? sorted[0]) * top23Weight;
+  const third = (sorted[2] ?? sorted[1] ?? sorted[0]) * top23Weight;
+  const remainderValues = sorted.slice(3);
+  const remainderAverage = remainderValues.length
+    ? remainderValues.reduce((sum, value) => sum + value, 0) / remainderValues.length
+    : sorted[Math.min(2, sorted.length - 1)];
+  const remainder = remainderAverage * SCORING.weights.remaining;
+
+  return top1 + second + third + remainder;
+}
+
+function qualityConsistencyScore(analysis: AnalysisData) {
+  const qualities = analysis.repositories.map((repo) => repo.quality);
+
+  if (qualities.length <= 1) {
+    return 0.4;
+  }
+
+  const mean = qualities.reduce((sum, value) => sum + value, 0) / qualities.length;
+  const variance =
+    qualities.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+    qualities.length;
+  const stdDev = Math.sqrt(variance);
+
+  return clamp(1 - stdDev / 2.5, 0, 1);
+}
+
+function hasComplexityBonusSignals(analysis: AnalysisData) {
+  const nonTrivialRepos = analysis.repositories.filter(
+    (repo) =>
+      repo.quality >= SCORING.thresholds.nonTrivialRepoQuality &&
+      repo.commits >= SCORING.thresholds.nonTrivialRepoCommits,
+  ).length;
+
+  return nonTrivialRepos >= 2;
+}
+
+export function deriveScoringFlags(analysis: AnalysisData): ScoringFlags {
+  return {
+    hasCloneProjects: countCloneProjects(analysis) > 0,
+    frontendHeavy: isFrontendHeavyLogicLight(analysis),
+    hasBackend: hasBackendSignals(analysis),
+    hasDevOps: hasDevOpsSignals(analysis),
+    shallowCommits: hasShallowContributionSignals(analysis),
+    hasRealWorldUsage: hasRealWorldUsageSignals(analysis),
+    poorDocumentation: hasPoorDocumentationSignals(analysis),
+  };
+}
+
+export function computeSystemScore(analysis: AnalysisData): number {
+  const flags = deriveScoringFlags(analysis);
+  const cloneCount = countCloneProjects(analysis);
+  const weightedRepoScore = computeWeightedRepositoryScore(analysis);
+
+  const baseline =
+    analysis.score * SCORING.weights.baselineModel +
+    weightedRepoScore * SCORING.weights.baselineRepo;
+
+  const clonePenalty = Math.min(
+    SCORING.penalties.cloneMax,
+    cloneCount * SCORING.penalties.clonePerProject,
+  );
+  const frontendHeavyPenalty = flags.frontendHeavy ? SCORING.penalties.frontendHeavy : 0;
+  const shallowPenalty = flags.shallowCommits ? SCORING.penalties.shallow : 0;
+  const noBackendPenalty = flags.hasBackend ? 0 : SCORING.penalties.noBackend;
+  const hasDeliverySignals =
+    flags.hasDevOps || flags.hasRealWorldUsage || hasTestingSignals(analysis);
+  const noCICDPenalty = hasDeliverySignals ? 0 : SCORING.penalties.noCICD;
+  const poorDocsPenalty = flags.poorDocumentation ? SCORING.penalties.poorDocs : 0;
+
+  const backendBonus = flags.hasBackend ? SCORING.bonuses.backend : 0;
+  const complexityBonus = hasComplexityBonusSignals(analysis)
+    ? SCORING.bonuses.complexity
+    : 0;
+  const consistencyBonus = qualityConsistencyScore(analysis) >= 0.7
+    ? SCORING.bonuses.consistency
+    : 0;
+  const realWorldBonus = flags.hasRealWorldUsage ? SCORING.bonuses.realWorld : 0;
+
+  const penalties =
+    clonePenalty +
+    frontendHeavyPenalty +
+    shallowPenalty +
+    noBackendPenalty +
+    noCICDPenalty +
+    poorDocsPenalty;
+  const bonuses = backendBonus + complexityBonus + consistencyBonus + realWorldBonus;
+
+  return roundToTenth(clamp(baseline - penalties + bonuses, 0, 10));
+}
+
+export function computeConfidence(
+  analysis: AnalysisData,
+  flags: ScoringFlags,
+  systemScore = computeSystemScore(analysis),
+) {
+  const repoDepth = clamp(analysis.repositoriesAnalyzed / 8, 0, 1);
+  const commitDepth = clamp(averageRepoCommits(analysis) / 40, 0, 1);
+  const consistencyDepth = qualityConsistencyScore(analysis);
+  const realSignalDepth =
+    [flags.hasBackend, flags.hasDevOps, flags.hasRealWorldUsage].filter(Boolean)
+      .length / 3;
+
+  let confidence =
+    0.2 +
+    repoDepth * 0.2 +
+    commitDepth * 0.25 +
+    consistencyDepth * 0.25 +
+    realSignalDepth * 0.2;
+
+  if (systemScore >= 7.5 && realSignalDepth < 0.5) {
+    confidence -= 0.2;
+  }
+
+  if (systemScore >= 8 && (!flags.hasBackend || flags.shallowCommits || flags.poorDocumentation)) {
+    confidence -= 0.2;
+  }
+
+  return roundToTenth(clamp(confidence, 0.2, 0.9));
+}
+
+function countSummarySentences(summary: string) {
+  return summary
+    .split(/[.!?]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean).length;
+}
+
+function buildDeterministicFallback(analysis: AnalysisData): AiQualitativeFeedback {
   const sortedBreakdown = [...analysis.breakdown].sort((a, b) => b.value - a.value);
   const strongestMetric = sortedBreakdown[0] ?? {
     label: "Code quality",
@@ -129,89 +435,82 @@ function buildDeterministicFallback(analysis: AnalysisData): AiFeedback {
     note: "",
   };
   const weakestMetric = sortedBreakdown[sortedBreakdown.length - 1] ?? {
-    label: "Documentation",
+    label: "Portfolio completeness",
     value: analysis.score,
     note: "",
   };
-  const strongestRepo = [...analysis.repositories].sort((a, b) => b.quality - a.quality)[0];
   const weakestRepo = [...analysis.repositories].sort((a, b) => a.quality - b.quality)[0];
-  const lowMetrics = sortedBreakdown
-    .slice(-2)
-    .map((metric) => `${metric.label} ${metric.value}/10`)
-    .join(" and ");
-  const verdict = scoreVerdict(analysis.score);
 
   return {
-    summary: `${analysis.username} scores ${analysis.score}/10 and is ${verdict}. The biggest liabilities are ${lowMetrics || "the two lowest-scoring dimensions"}, with ${weakestMetric.label} as the primary blocker at ${weakestMetric.value}/10.`,
+    summary: `${analysis.username} shows inconsistent engineering maturity with elevated execution risk. Architecture quality is mixed: ${strongestMetric.label} is ${strongestMetric.value}/10 while ${weakestMetric.label} is ${weakestMetric.value}/10 and remains the main blocker. ${DEFAULT_SUMMARY}`,
     strengths: [
-      `${strongestMetric.label} is the only clear bright spot at ${strongestMetric.value}/10 across ${analysis.repositoriesAnalyzed} analyzed repositories.`,
-      `${strongestRepo?.name ?? "Top featured repo"} leads with quality ${strongestRepo?.quality ?? analysis.score}/10 and ${strongestRepo?.stars ?? 0} stars; the rest of the portfolio trails behind it.`,
-      `${analysis.totalStars} total stars and ${analysis.followers} followers indicate visible output, but visibility does not offset weak execution metrics in lower-scoring categories.`,
+      `${strongestMetric.label} is the strongest measurable signal at ${strongestMetric.value}/10 across analyzed repositories.`,
+      `${analysis.repositoriesAnalyzed} repositories and ${analysis.totalStars} total stars provide a baseline evidence set instead of purely empty portfolio claims.`,
+      `${analysis.repositories[0]?.name ?? "Top repository"} has the best repository-level quality and offers the clearest technical proof point in the set.`,
     ],
     weaknesses: [
-      `${weakestMetric.label} is a hard blocker at ${weakestMetric.value}/10 and will trigger rejection in most technical screens if left unresolved.`,
-      `${weakestRepo?.name ?? "The weakest featured repo"} sits at quality ${weakestRepo?.quality ?? analysis.score}/10, which is not production-grade evidence for hiring decisions.`,
-      "Missing test strategy, observability proof, and incident-readiness evidence creates delivery and reliability risk that reviewers cannot ignore.",
+      `${weakestMetric.label} at ${weakestMetric.value}/10 indicates weak proof for production-grade execution and increases rejection risk.`,
+      `${weakestRepo?.name ?? "The weakest repository"} lacks robust engineering signals and raises maintainability risk under real delivery pressure.`,
+      "CI/CD, test coverage, deployment quality, and observability evidence remain insufficiently demonstrated in the available portfolio data.",
     ],
     suggestions: [
-      `Fix ${weakestMetric.label} first: implement tests, monitoring notes, and rollback instructions in the top 3 repositories before adding new projects.`,
-      `Start with ${weakestRepo?.name ?? "the weakest featured repo"}: ship a concrete remediation pass (failing test coverage gaps, runbook, and benchmark or reliability evidence).`,
-      "Publish release notes with risk, verification, and post-deploy outcomes so reviewers can evaluate engineering judgment instead of repository volume.",
+      `Prioritize ${weakestMetric.label}: publish architecture decisions, setup verification, and runtime tradeoffs for top repositories.`,
+      "Add automated quality gates (tests, coverage, CI pipeline, build checks) and expose results in repository documentation.",
+      "Provide deployment evidence (live environments, uptime/error metrics, release notes) so reviewers can verify behavior beyond code snapshots.",
     ],
   };
 }
 
-function ensureFeedbackQuality(feedback: AiFeedback, analysis: AnalysisData): AiFeedback {
-  const specificSignals = deriveSpecificSignals(analysis);
-  const summarySentences = feedback.summary
-    .split(/[.!?]+/)
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
-
-  const summaryHasEvidence = /\d/.test(feedback.summary) ||
-    specificSignals.some((signal) =>
-      signal.length > 2 ? feedback.summary.toLowerCase().includes(signal) : false,
-    );
-
-  const strengthsGenericCount = feedback.strengths.filter((item) =>
-    looksGenericLine(item, specificSignals),
-  ).length;
-  const weaknessesGenericCount = feedback.weaknesses.filter((item) =>
-    looksGenericLine(item, specificSignals),
-  ).length;
-
-  if (
-    !summaryHasEvidence ||
-    summarySentences.length < 2 ||
-    strengthsGenericCount >= 2 ||
-    weaknessesGenericCount >= 1 ||
-    needsBluntSummary(analysis.score, feedback.summary)
-  ) {
-    return buildDeterministicFallback(analysis);
-  }
-
-  const summary = summaryHasEvidence
-    ? feedback.summary
-    : `${feedback.summary} ${DEFAULT_SUMMARY_SENTENCE}`;
+export function buildDeterministicAiFeedback(analysis: AnalysisData): AiFeedback {
+  const flags = deriveScoringFlags(analysis);
+  const score = computeSystemScore(analysis);
 
   return {
-    ...feedback,
-    summary,
+    ...buildDeterministicFallback(analysis),
+    score,
+    confidence: computeConfidence(analysis, flags, score),
   };
 }
 
-function parseAiFeedback(raw: string, baseline: AnalysisData): AiFeedback {
-  const strictFallback = buildDeterministicFallback(baseline);
-  const parsed = JSON.parse(extractJsonObject(raw)) as Record<string, unknown>;
+function ensureFeedbackQuality(
+  feedback: AiQualitativeFeedback,
+  analysis: AnalysisData,
+): AiQualitativeFeedback {
+  const fallback = buildDeterministicFallback(analysis);
+  const sentenceCount = countSummarySentences(feedback.summary);
 
-  const normalized = {
-    summary: normalizeText(parsed.summary, strictFallback.summary),
-    strengths: normalizeList(parsed.strengths, strictFallback.strengths),
-    weaknesses: normalizeList(parsed.weaknesses, strictFallback.weaknesses),
-    suggestions: normalizeList(parsed.suggestions, strictFallback.suggestions),
-  };
+  if (sentenceCount < 2 || sentenceCount > 3) {
+    return fallback;
+  }
 
-  return ensureFeedbackQuality(normalized, baseline);
+  if (
+    feedback.strengths.length < 3 ||
+    feedback.weaknesses.length < 3 ||
+    feedback.suggestions.length < 3
+  ) {
+    return fallback;
+  }
+
+  return feedback;
+}
+
+function parseAiFeedback(raw: string, baseline: AnalysisData): AiQualitativeFeedback {
+  const fallback = buildDeterministicFallback(baseline);
+
+  try {
+    const parsed = JSON.parse(extractJsonObject(raw)) as Record<string, unknown>;
+
+    const normalized: AiQualitativeFeedback = {
+      summary: normalizeText(parsed.summary, fallback.summary),
+      strengths: normalizeList(parsed.strengths, fallback.strengths),
+      weaknesses: normalizeList(parsed.weaknesses, fallback.weaknesses),
+      suggestions: normalizeList(parsed.suggestions, fallback.suggestions),
+    };
+
+    return ensureFeedbackQuality(normalized, baseline);
+  } catch {
+    return fallback;
+  }
 }
 
 export async function generateAiFeedback(
@@ -221,16 +520,19 @@ export async function generateAiFeedback(
   const ai = new GoogleGenAI({ apiKey });
   const model = process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
 
+  const flags = deriveScoringFlags(analysis);
+  const systemScore = computeSystemScore(analysis);
+
   const context = {
     username: analysis.username,
-    score: analysis.score,
-    benchmarkDelta: analysis.benchmarkDelta,
+    baselineScore: analysis.score,
+    systemScore,
     followers: analysis.followers,
     totalStars: analysis.totalStars,
     repositoriesAnalyzed: analysis.repositoriesAnalyzed,
     breakdown: analysis.breakdown,
-    highlights: analysis.highlights,
     skills: analysis.skills,
+    flags,
     repositories: analysis.repositories.slice(0, 6).map((repository) => ({
       name: repository.name,
       stack: repository.stack,
@@ -244,45 +546,48 @@ export async function generateAiFeedback(
   };
 
   const prompt = [
-    "You are a staff-plus engineering interviewer reviewing a candidate's public GitHub portfolio.",
-    "Generate technical feedback with senior-engineer rigor and skeptical evidence standards.",
-    "Default stance: risk-first review. Be stricter on weaknesses than strengths.",
+    "You are a staff-level software engineer and hiring interviewer evaluating a candidate's public GitHub portfolio.",
     "Return STRICT JSON only with keys: summary, strengths, weaknesses, suggestions.",
-    "Rules:",
-    "- summary: 2-3 sentences; lead with technical risks and hiring decision impact.",
-    "- strengths: array of exactly 3 concise bullets focused on technical execution; keep each short and evidence-backed.",
-    "- weaknesses: array of exactly 3 concise bullets focused on technical gaps and risks; each must be more specific than strengths.",
-    "- suggestions: array of exactly 3 concrete, high-impact technical actions with implementation direction.",
-    "- Every bullet must cite at least one concrete data point from context (number, metric label, or repository name).",
-    "- At least 2 weakness bullets must be explicit high-severity risks with potential consequence (reliability, security, maintainability, or delivery risk).",
-    "- At least 1 weakness bullet must identify missing evidence (for example tests, observability, incident-readiness, or performance proof).",
-    "- Weaknesses and suggestions together should carry most of the analytical weight.",
-    "- Do not balance criticism with compliments; prioritize what could fail in production or during scale.",
-    "- If evidence is limited, state uncertainty directly instead of praising.",
-    "- Be direct and blunt. Do not soften language with politeness or motivational framing.",
-    "- If score is below 7.6, explicitly state the profile is below the hiring bar or not competitive.",
-    "- If score is below 6.8, clearly state this profile would likely be rejected in most technical screens today.",
-    "- Avoid generic career advice and avoid soft-skill commentary.",
-    "- Avoid generic praise words like 'great', 'excellent', 'impressive', 'outstanding', or 'strong' unless followed by concrete evidence.",
-    "- Avoid markdown, numbering, and any keys outside the required schema.",
-    "Portfolio analysis context:",
+    "Do NOT return score or confidence. The system computes score and confidence deterministically.",
+    "summary requirements: 2-3 sentences, direct, critical, evidence-based.",
+    "strengths requirements: 3-5 concise bullets with concrete technical signals.",
+    "weaknesses requirements: 3-5 concise bullets, critical and specific.",
+    "suggestions requirements: 3-5 actionable technical improvements.",
+    "No markdown. No extra keys. No motivational tone.",
+    "Portfolio context JSON:",
     JSON.stringify(context),
   ].join("\n");
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      temperature: 0.2,
-    },
-  });
+  let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
 
-  const rawText = response.text?.trim();
+  try {
+    response = await withTimeout(
+      ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          temperature: 0.1,
+        },
+      }),
+      getAiTimeoutMs(),
+    );
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error("AI request timed out.");
+    }
 
-  if (!rawText) {
-    throw new Error("AI service returned an empty feedback payload.");
+    throw error;
   }
 
-  return parseAiFeedback(rawText, analysis);
+  const rawText = response.text?.trim();
+  const qualitative = rawText
+    ? parseAiFeedback(rawText, analysis)
+    : buildDeterministicFallback(analysis);
+
+  return {
+    ...qualitative,
+    score: systemScore,
+    confidence: computeConfidence(analysis, flags, systemScore),
+  };
 }

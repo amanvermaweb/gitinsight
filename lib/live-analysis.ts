@@ -62,6 +62,7 @@ type EnrichedRepository = {
 
 const GITHUB_API_ROOT = "https://api.github.com";
 const TOP_REPOSITORY_SEARCH_LIMIT = 30;
+const DEFAULT_GITHUB_TIMEOUT_MS = 10_000;
 const GITHUB_API_HEADERS = {
   Accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2022-11-28",
@@ -83,6 +84,38 @@ export class GitHubRequestError extends Error {
     super(message);
     this.name = "GitHubRequestError";
     this.status = status;
+  }
+}
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+
+  return value;
+}
+
+function getGitHubTimeoutMs() {
+  return parsePositiveIntegerEnv("ANALYZE_GITHUB_TIMEOUT_MS", DEFAULT_GITHUB_TIMEOUT_MS);
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit) {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), getGitHubTimeoutMs());
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 }
 
@@ -138,14 +171,27 @@ function decodeReadmeLength(readme: GitHubReadme | null) {
 async function requestGitHub<T>(url: string, token: string): Promise<T> {
   const target = url.startsWith("http") ? url : `${GITHUB_API_ROOT}${url}`;
 
-  const response = await fetch(target, {
-    method: "GET",
-    cache: "no-store",
-    headers: {
-      ...GITHUB_API_HEADERS,
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  let response: Response;
+
+  try {
+    response = await fetchWithTimeout(target, {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        ...GITHUB_API_HEADERS,
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new GitHubRequestError(504, "GitHub request timed out.");
+    }
+
+    throw new GitHubRequestError(
+      502,
+      "GitHub request failed before receiving a response.",
+    );
+  }
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as
@@ -229,19 +275,32 @@ async function requestRepositoryCommitCount(
   username: string,
   token: string,
 ) {
-  const response = await fetch(
-    `${GITHUB_API_ROOT}/repos/${repoFullName}/commits?author=${encodeURIComponent(
-      username,
-    )}&per_page=1`,
-    {
-      method: "GET",
-      cache: "no-store",
-      headers: {
-        ...GITHUB_API_HEADERS,
-        Authorization: `Bearer ${token}`,
+  let response: Response;
+
+  try {
+    response = await fetchWithTimeout(
+      `${GITHUB_API_ROOT}/repos/${repoFullName}/commits?author=${encodeURIComponent(
+        username,
+      )}&per_page=1`,
+      {
+        method: "GET",
+        cache: "no-store",
+        headers: {
+          ...GITHUB_API_HEADERS,
+          Authorization: `Bearer ${token}`,
+        },
       },
-    },
-  );
+    );
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new GitHubRequestError(504, "GitHub request timed out.");
+    }
+
+    throw new GitHubRequestError(
+      502,
+      "GitHub request failed before receiving a response.",
+    );
+  }
 
   if (!response.ok) {
     if (response.status === 404 || response.status === 409) {
@@ -514,6 +573,17 @@ export async function buildLiveAnalysis(
   const weakestMetric = breakdownByScore[breakdownByScore.length - 1] ?? breakdown[breakdown.length - 1];
 
   const score = roundToTenth(average(breakdown.map((metric) => metric.value)));
+  const confidence = roundToTenth(
+    clamp(
+      0.35 +
+        clamp(analyzedRepos.length / 10, 0, 1) * 0.2 +
+        readmeCoverage * 0.15 +
+        recentCoverage * 0.15 +
+        activityDensity * 0.15,
+      0.2,
+      0.9,
+    ),
+  );
 
   const skills = Object.entries(CATEGORY_LANGUAGES).map(([label, langs]) => {
     const bytes = langs.reduce(
@@ -569,6 +639,7 @@ export async function buildLiveAnalysis(
   return {
     username: user.login,
     score,
+    confidence,
     followers: user.followers,
     totalStars,
     repositoriesAnalyzed: analyzedRepos.length,

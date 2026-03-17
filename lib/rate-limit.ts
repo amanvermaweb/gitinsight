@@ -111,13 +111,27 @@ export function checkRateLimit(input: CheckRateLimitInput): RateLimitResult {
 }
 
 export function getClientIpAddress(headers: Headers): string {
-  const forwardedFor = headers.get("x-forwarded-for");
+  const takeFirstIp = (headerValue: string | null) => {
+    if (!headerValue) {
+      return "";
+    }
 
-  if (forwardedFor) {
-    const firstIp = forwardedFor.split(",")[0]?.trim();
+    return headerValue.split(",")[0]?.trim() ?? "";
+  };
 
-    if (firstIp) {
-      return firstIp;
+  const trustProxyHeaders =
+    process.env.VERCEL === "1" ||
+    process.env.TRUST_PROXY_IP_HEADERS?.trim().toLowerCase() === "true";
+
+  if (trustProxyHeaders) {
+    const vercelIp = takeFirstIp(headers.get("x-vercel-forwarded-for"));
+    if (vercelIp) {
+      return vercelIp;
+    }
+
+    const forwardedIp = takeFirstIp(headers.get("x-forwarded-for"));
+    if (forwardedIp) {
+      return forwardedIp;
     }
   }
 

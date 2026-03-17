@@ -55,6 +55,7 @@ Open `http://localhost:3000`.
 - `npm run build`: Create production build.
 - `npm run start`: Run production server.
 - `npm run lint`: Run ESLint.
+- `npm run test`: Run unit tests.
 
 ## API Contract
 
@@ -74,6 +75,7 @@ Success response (`200`):
 {
     "source": "github",
     "cachedAi": false,
+    "warning": "AI provider is temporarily unavailable. Returned deterministic system feedback.",
     "analysis": {
         "username": "octocat",
         "score": 7.8,
@@ -109,7 +111,7 @@ Common status codes:
 - `404`: GitHub user not found.
 - `429`: Cooldown/rate limit triggered.
 - `500`: Missing server credentials or unexpected failure.
-- `502`: GitHub/AI upstream failure.
+- `502`: GitHub upstream failure.
 
 Rate limit headers returned by the API:
 
@@ -127,6 +129,7 @@ Rate limit headers returned by the API:
 4. Fetch recent public events and repository metadata (languages, README, commit count).
 5. Compute metrics and generate the analysis object.
 6. Load cached AI feedback when available, otherwise call Gemini and cache result.
+7. If AI generation fails, return deterministic scoring-backed feedback and include a response `warning`.
 
 Notes:
 
@@ -157,7 +160,7 @@ lib/
 - `Server is missing GitHub credentials`: set `GITHUB_TOKEN` (or `GITHUB_PERSONAL_ACCESS_TOKEN`).
 - `Server is missing AI credentials`: set `AI_API_KEY` (or `GEMINI_API_KEY`).
 - `Rate limit exceeded` / cooldown errors: wait for `Retry-After` and tune limits if needed.
-- AI generation failures (`502`): verify AI key/model and retry; cached responses are only used if previously created.
+- AI provider outages: the API still returns `200` with deterministic feedback and a `warning` field.
 
 ## Security Notes
 
