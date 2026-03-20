@@ -44,3 +44,31 @@ export async function fetchLiveAnalysis(
 
   return payload;
 }
+
+export async function fetchSharedAnalysis(
+  username: string,
+  signal: AbortSignal,
+): Promise<AnalyzeApiResponse> {
+  const query = new URLSearchParams({ username }).toString();
+  const response = await fetch(`/api/analyze?${query}`, {
+    method: "GET",
+    signal,
+  });
+
+  const payload = await parseJsonPayload<AnalyzeApiResponse | ApiErrorPayload>(response);
+
+  if (!response.ok) {
+    throw new Error(
+      extractErrorMessage(
+        payload as ApiErrorPayload | null,
+        "Unable to fetch shared analysis snapshot.",
+      ),
+    );
+  }
+
+  if (!payload || !("analysis" in payload)) {
+    throw new Error("Unexpected response from shared analysis service.");
+  }
+
+  return payload;
+}

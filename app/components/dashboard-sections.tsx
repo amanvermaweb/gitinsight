@@ -57,6 +57,12 @@ export function DashboardHeader({
 
         <div className="flex flex-wrap items-center gap-3 lg:justify-end">
           <Link
+            href={`/analyze/${encodeURIComponent(username)}/share`}
+            className="rounded-full border border-(--accent)/35 bg-(--accent-soft) px-3 py-2 text-sm text-(--foreground) transition hover:bg-(--accent)/25"
+          >
+            Share your GitInsight
+          </Link>
+          <Link
             href="/"
             className="rounded-full border border-white/8 bg-white/6 px-3 py-2 text-sm text-(--foreground) transition hover:bg-white/10"
           >
@@ -199,15 +205,15 @@ export function HeroSection({
 
 export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
   const describeMetricConfidence = (value: number) => {
-    if (value >= 8.6) {
+    if (value >= 85) {
       return "Very high";
     }
 
-    if (value >= 7.6) {
+    if (value >= 70) {
       return "High";
     }
 
-    if (value >= 6.7) {
+    if (value >= 55) {
       return "Moderate";
     }
 
@@ -259,6 +265,9 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
                 <h3 className="mt-2 break-all text-3xl font-semibold tracking-[-0.05em] text-(--foreground)">
                   @{analysis.username}
                 </h3>
+                <p className="mt-2 text-sm font-medium tracking-[0.02em] text-(--accent-strong)">
+                  Archetype: {analysis.scoreMeta?.archetype ?? "Quality-Focused Builder"}
+                </p>
                 <p className="mt-2 max-w-xl text-sm leading-6 wrap-break-word text-(--muted-strong)">
                   {analysis.headline}
                 </p>
@@ -296,6 +305,38 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
             </div>
           </div>
 
+          <div className="mt-6 rounded-3xl border border-white/8 bg-(--panel-strong) p-5">
+            <p className="font-mono text-[0.68rem] uppercase tracking-[0.2em] text-(--muted)">
+              You vs average developer
+            </p>
+            <div className="mt-4 space-y-4">
+              <div>
+                <div className="mb-2 flex items-center justify-between text-sm text-(--muted-strong)">
+                  <span>You</span>
+                  <span>{analysis.score}/100</span>
+                </div>
+                <div className="h-2 rounded-full bg-white/8">
+                  <div
+                    className="h-full rounded-full bg-[linear-gradient(90deg,var(--accent-strong),var(--warm))]"
+                    style={{ width: `${analysis.score}%` }}
+                  />
+                </div>
+              </div>
+              <div>
+                <div className="mb-2 flex items-center justify-between text-sm text-(--muted-strong)">
+                  <span>Average developer</span>
+                  <span>{analysis.scoreMeta?.averageDeveloperScore ?? 56}/100</span>
+                </div>
+                <div className="h-2 rounded-full bg-white/8">
+                  <div
+                    className="h-full rounded-full bg-white/35"
+                    style={{ width: `${analysis.scoreMeta?.averageDeveloperScore ?? 56}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="mt-6 grid gap-3">
             {analysis.highlights.map((highlight) => (
               <div
@@ -330,7 +371,7 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
                   <div className="mt-3 h-2 rounded-full bg-white/6">
                     <motion.div
                       initial={{ width: 0 }}
-                      animate={{ width: `${metric.value * 10}%` }}
+                      animate={{ width: `${metric.value}%` }}
                       transition={{
                         duration: 0.72,
                         ease: [0.22, 1, 0.36, 1],
@@ -394,7 +435,7 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
                 <div className="flex min-w-0 items-center justify-between gap-4">
                   <p className="min-w-0 flex-1 text-sm font-medium wrap-break-word text-(--foreground)">{metric.label}</p>
                   <p className="font-mono text-sm text-(--muted)">
-                    {describeMetricConfidence(metric.value)} confidence ({metric.value.toFixed(1)}/10)
+                    {describeMetricConfidence(metric.value)} confidence ({metric.value}/100)
                   </p>
                 </div>
                 <p className="text-sm leading-6 wrap-break-word text-(--muted)">{metric.note}</p>
@@ -558,6 +599,11 @@ export function SkillsAndFeedbackSection({
 }: {
   analysis: AnalysisData;
 }) {
+  const target = analysis.scoreMeta?.nextLevel;
+  const starsGoal = target?.starsNeeded ?? 20;
+  const externalGoal = target?.externalContributionsNeeded ?? 3;
+  const commitGoal = target?.commitsNeeded ?? 40;
+
   return (
     <section className="grid gap-8 xl:grid-cols-[0.95fr_1.05fr]">
       <div className="space-y-8 flex flex-col">
@@ -570,6 +616,26 @@ export function SkillsAndFeedbackSection({
 
         <Panel className="overflow-hidden p-5 sm:p-7">
           <SkillRadar skills={analysis.skills} />
+        </Panel>
+
+        <Panel className="p-6 sm:p-7">
+          <p className="font-mono text-[0.72rem] uppercase tracking-[0.22em] text-(--muted)">
+            Next level
+          </p>
+          <h3 className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-(--foreground)">
+            To reach Top {target?.targetTopPercent ?? 10}%
+          </h3>
+          <div className="mt-5 space-y-3">
+            <div className="rounded-[20px] border border-white/8 bg-white/4 p-4 text-sm text-(--muted-strong)">
+              Gain {starsGoal > 0 ? `${starsGoal}+` : "20+"} repo stars
+            </div>
+            <div className="rounded-[20px] border border-white/8 bg-white/4 p-4 text-sm text-(--muted-strong)">
+              Contribute to {externalGoal > 0 ? externalGoal : 3} open-source projects
+            </div>
+            <div className="rounded-[20px] border border-white/8 bg-white/4 p-4 text-sm text-(--muted-strong)">
+              Increase activity by {commitGoal > 0 ? `${commitGoal}+` : "40+"} weighted commits
+            </div>
+          </div>
         </Panel>
       </div>
 
@@ -646,6 +712,7 @@ export function SkillsAndFeedbackSection({
             </div>
           </div>
         </Panel>
+
       </div>
     </section>
   );

@@ -38,6 +38,17 @@ export type AnalysisData = {
   strengths: string[];
   weaknesses: string[];
   suggestions: string[];
+  scoreMeta?: {
+    archetype: string;
+    averageDeveloperScore: number;
+    topPercent?: number;
+    nextLevel?: {
+      targetTopPercent: number;
+      starsNeeded: number;
+      externalContributionsNeeded: number;
+      commitsNeeded: number;
+    };
+  };
 };
 
 export type AnalyzeApiResponse = {

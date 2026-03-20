@@ -5,7 +5,7 @@ import type { AnalysisData } from "@/lib/types";
 
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_CACHE_MAX_ENTRIES = 2_000;
-const DEFAULT_AI_PROMPT_VERSION = "v6";
+const DEFAULT_AI_PROMPT_VERSION = "v7";
 const REDIS_CACHE_PREFIX = "analyze:ai-feedback:";
 
 type CacheRecord = {
@@ -120,7 +120,7 @@ function isAiFeedback(value: unknown): value is AiFeedback {
     hasStringItems(strengths) &&
     hasStringItems(weaknesses) &&
     hasStringItems(suggestions) &&
-    isBoundedNumber(score, 0, 10) &&
+    isBoundedNumber(score, 0, 100) &&
     isBoundedNumber(confidence, 0, 1)
   );
 }

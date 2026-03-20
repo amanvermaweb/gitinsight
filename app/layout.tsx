@@ -1,11 +1,14 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next";
 
 function resolveMetadataBase() {
   const configuredSiteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim();
   const vercelUrl = process.env.VERCEL_URL?.trim();
-  const baseUrl = configuredSiteUrl || (vercelUrl ? `https://${vercelUrl}` : "http://localhost:3000");
+  const baseUrl =
+    configuredSiteUrl ||
+    (vercelUrl ? `https://${vercelUrl}` : "http://localhost:3000");
 
   try {
     return new URL(baseUrl);
@@ -38,7 +41,14 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+      <meta property="og:image" content="<generated>" />
+      <meta property="og:image:type" content="<generated>" />
+      <meta property="og:image:width" content="<generated>" />
+      <meta property="og:image:height" content="<generated>" />
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+        <Analytics />
         {children}
       </body>
     </html>

@@ -1,4 +1,8 @@
 import type { AnalysisData } from "./types";
+import {
+  buildScoreNarratives,
+  computeGitInsightScore,
+} from "./gitinsight-score";
 import { clamp, roundToTenth } from "./utils";
 
 type GitHubUser = {
@@ -11,12 +15,17 @@ type GitHubRepositorySearchResponse = {
   items: GitHubRepo[];
 };
 
+type GitHubIssueSearchResponse = {
+  total_count: number;
+};
+
 type GitHubRepo = {
   full_name: string;
   description: string | null;
   homepage: string | null;
   language: string | null;
   stargazers_count: number;
+  forks_count: number;
   pushed_at: string;
   archived: boolean;
   fork: boolean;
@@ -63,11 +72,38 @@ type EnrichedRepository = {
 const GITHUB_API_ROOT = "https://api.github.com";
 const TOP_REPOSITORY_SEARCH_LIMIT = 30;
 const DEFAULT_GITHUB_TIMEOUT_MS = 10_000;
+const DAYS_IN_SCORING_WINDOW = 90;
+const MAX_EVENT_PAGES = 3;
+const DEFAULT_MIN_SCORABLE_REPO_SIZE_KB = 80;
+const DEFAULT_MAX_COMMITS_PER_MINUTE = 12;
+const DEFAULT_QUALITY_STAR_CAP_PER_REPO = 3;
+const DEFAULT_IMPACT_STAR_CAP_PER_REPO = 20;
+const DEFAULT_IMPACT_FORK_CAP_PER_REPO = 12;
+const DEFAULT_QUALITY_REPO_LIMIT = 6;
+const DEFAULT_IMPACT_REPO_LIMIT = 12;
 const GITHUB_API_HEADERS = {
   Accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2022-11-28",
   "User-Agent": "GitInsight-App",
 } as const;
+
+const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp }> = [
+  { name: "React", regex: /\breact\b/i },
+  { name: "Next.js", regex: /\bnext(?:\.js|js)?\b/i },
+  { name: "Vue", regex: /\bvue\b/i },
+  { name: "Nuxt", regex: /\bnuxt\b/i },
+  { name: "Angular", regex: /\bangular\b/i },
+  { name: "Svelte", regex: /\bsvelte\b/i },
+  { name: "Remix", regex: /\bremix\b/i },
+  { name: "Express", regex: /\bexpress\b/i },
+  { name: "NestJS", regex: /\bnest\b|\bnestjs\b/i },
+  { name: "Django", regex: /\bdjango\b/i },
+  { name: "Flask", regex: /\bflask\b/i },
+  { name: "FastAPI", regex: /\bfastapi\b/i },
+  { name: "Rails", regex: /\brails\b/i },
+  { name: "Spring", regex: /\bspring\b/i },
+  { name: "Laravel", regex: /\blaravel\b/i },
+];
 
 const CATEGORY_LANGUAGES: Record<string, string[]> = {
   Frontend: ["TypeScript", "JavaScript", "CSS", "HTML", "Vue", "Svelte", "Astro"],
@@ -351,12 +387,255 @@ function readmeInsight(readmeLength: number) {
   return "README is strong: framing, setup details, and project context are easy to evaluate.";
 }
 
-function scoreToPercentile(score: number) {
-  return clamp(Math.round(24 - score * 1.95), 5, 19);
-}
-
 function toPercent(value: number) {
   return Math.round(clamp(value, 0, 1) * 100);
+}
+
+function getMinimumScorableRepoSizeKb() {
+  return parsePositiveIntegerEnv(
+    "ANALYZE_MIN_SCORABLE_REPO_SIZE_KB",
+    DEFAULT_MIN_SCORABLE_REPO_SIZE_KB,
+  );
+}
+
+function getMaxCommitsPerMinute() {
+  return parsePositiveIntegerEnv(
+    "ANALYZE_MAX_COMMITS_PER_MINUTE",
+    DEFAULT_MAX_COMMITS_PER_MINUTE,
+  );
+}
+
+function getQualityStarCapPerRepo() {
+  return parsePositiveIntegerEnv(
+    "ANALYZE_QUALITY_STAR_CAP_PER_REPO",
+    DEFAULT_QUALITY_STAR_CAP_PER_REPO,
+  );
+}
+
+function getImpactStarCapPerRepo() {
+  return parsePositiveIntegerEnv(
+    "ANALYZE_IMPACT_STAR_CAP_PER_REPO",
+    DEFAULT_IMPACT_STAR_CAP_PER_REPO,
+  );
+}
+
+function getImpactForkCapPerRepo() {
+  return parsePositiveIntegerEnv(
+    "ANALYZE_IMPACT_FORK_CAP_PER_REPO",
+    DEFAULT_IMPACT_FORK_CAP_PER_REPO,
+  );
+}
+
+function getQualityRepoLimit() {
+  return parsePositiveIntegerEnv(
+    "ANALYZE_QUALITY_REPO_LIMIT",
+    DEFAULT_QUALITY_REPO_LIMIT,
+  );
+}
+
+function getImpactRepoLimit() {
+  return parsePositiveIntegerEnv(
+    "ANALYZE_IMPACT_REPO_LIMIT",
+    DEFAULT_IMPACT_REPO_LIMIT,
+  );
+}
+
+function dayKey(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function minuteKeyFromIso(isoDate: string) {
+  return isoDate.slice(0, 16);
+}
+
+function computeLongestStreak(days: Set<string>) {
+  if (days.size === 0) {
+    return 0;
+  }
+
+  const timestamps = Array.from(days)
+    .map((entry) => Date.parse(`${entry}T00:00:00.000Z`))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+
+  if (timestamps.length === 0) {
+    return 0;
+  }
+
+  let longest = 1;
+  let current = 1;
+
+  for (let index = 1; index < timestamps.length; index += 1) {
+    const diffDays = Math.round((timestamps[index] - timestamps[index - 1]) / 86_400_000);
+
+    if (diffDays === 1) {
+      current += 1;
+      longest = Math.max(longest, current);
+      continue;
+    }
+
+    if (diffDays > 1) {
+      current = 1;
+    }
+  }
+
+  return longest;
+}
+
+function countMeaningfulLanguages(languageTotals: Map<string, number>) {
+  const totalBytes = Array.from(languageTotals.values()).reduce(
+    (sum, value) => sum + value,
+    0,
+  );
+
+  if (totalBytes <= 0) {
+    return 0;
+  }
+
+  const shareThreshold = totalBytes * 0.05;
+  return Array.from(languageTotals.entries()).filter(
+    ([, bytes]) => bytes >= shareThreshold || bytes >= 20_000,
+  ).length;
+}
+
+function detectFrameworkCount(repositories: GitHubRepo[]) {
+  const detected = new Set<string>();
+
+  for (const repo of repositories) {
+    const corpus = [
+      repo.full_name,
+      repo.description ?? "",
+      ...(repo.topics ?? []),
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    for (const framework of FRAMEWORK_PATTERNS) {
+      if (framework.regex.test(corpus)) {
+        detected.add(framework.name);
+      }
+    }
+  }
+
+  return detected.size;
+}
+
+function toDateFilter(days: number) {
+  const date = new Date(Date.now() - days * 86_400_000);
+  return date.toISOString().slice(0, 10);
+}
+
+function detectArchetype(
+  scoreComponents: ReturnType<typeof computeGitInsightScore>["components"],
+  skills: Array<{ label: string; value: number }>,
+) {
+  const frontendSkill = skills.find((entry) => entry.label === "Frontend")?.value ?? 0;
+  const backendSkill = skills.find((entry) => entry.label === "Backend")?.value ?? 0;
+
+  if (scoreComponents.quality >= 75 && scoreComponents.consistency >= 65) {
+    return "Quality-Focused Builder";
+  }
+
+  if (scoreComponents.consistency >= 78) {
+    return "Consistency Grinder";
+  }
+
+  if (scoreComponents.impact >= 68) {
+    return "Open Source Explorer";
+  }
+
+  if (frontendSkill >= 65 && backendSkill >= 60 && scoreComponents.breadth >= 65) {
+    return "Full Stack Operator";
+  }
+
+  if (frontendSkill >= backendSkill + 12) {
+    return "Frontend Specialist";
+  }
+
+  return "Quality-Focused Builder";
+}
+
+type ActivityWindowStats = {
+  weightedCommits: number;
+  activeDays: number;
+  longestStreak: number;
+  externalContributions: number;
+  spamCommitsSuppressed: number;
+  pushEventsLast90: number;
+};
+
+function computeActivityWindowStats(events: GitHubEvent[], username: string): ActivityWindowStats {
+  const nowMs = Date.now();
+  const minEventTimeMs = nowMs - DAYS_IN_SCORING_WINDOW * 86_400_000;
+  const activeDaySet = new Set<string>();
+  const externalContributionKeys = new Set<string>();
+  const minuteCommitBuckets = new Map<string, number>();
+  const maxCommitsPerMinute = getMaxCommitsPerMinute();
+  const normalizedUsername = username.trim().toLowerCase();
+
+  let weightedCommits = 0;
+  let spamCommitsSuppressed = 0;
+  let pushEventsLast90 = 0;
+
+  for (const event of events) {
+    const eventDate = new Date(event.created_at);
+    const eventTime = eventDate.getTime();
+
+    if (!Number.isFinite(eventTime) || eventTime < minEventTimeMs || eventTime > nowMs) {
+      continue;
+    }
+
+    activeDaySet.add(dayKey(eventDate));
+
+    const owner = event.repo.name.split("/")[0]?.toLowerCase() ?? "";
+    const isExternalRepo = owner.length > 0 && owner !== normalizedUsername;
+
+    if (
+      isExternalRepo &&
+      [
+        "PushEvent",
+        "PullRequestEvent",
+        "IssuesEvent",
+        "IssueCommentEvent",
+        "PullRequestReviewEvent",
+      ].includes(event.type)
+    ) {
+      externalContributionKeys.add(`${normalizeRepoKey(event.repo.name)}:${dayKey(eventDate)}`);
+    }
+
+    if (event.type !== "PushEvent") {
+      continue;
+    }
+
+    const rawCommitCount = clamp(Number(event.payload?.size ?? 1), 1, 30);
+    const minuteKey = minuteKeyFromIso(event.created_at);
+    const alreadyCounted = minuteCommitBuckets.get(minuteKey) ?? 0;
+    const remainingBudget = Math.max(0, maxCommitsPerMinute - alreadyCounted);
+    const acceptedCommitCount = Math.min(rawCommitCount, remainingBudget);
+    const suppressed = rawCommitCount - acceptedCommitCount;
+
+    spamCommitsSuppressed += suppressed;
+    minuteCommitBuckets.set(minuteKey, alreadyCounted + acceptedCommitCount);
+
+    if (acceptedCommitCount <= 0) {
+      continue;
+    }
+
+    pushEventsLast90 += acceptedCommitCount;
+
+    const ageDays = (nowMs - eventTime) / 86_400_000;
+    const recencyWeight = clamp(1 - (ageDays / DAYS_IN_SCORING_WINDOW) * 0.45, 0.55, 1);
+    weightedCommits += acceptedCommitCount * recencyWeight;
+  }
+
+  return {
+    weightedCommits: Math.round(weightedCommits),
+    activeDays: activeDaySet.size,
+    longestStreak: computeLongestStreak(activeDaySet),
+    externalContributions: externalContributionKeys.size,
+    spamCommitsSuppressed,
+    pushEventsLast90,
+  };
 }
 
 export async function buildLiveAnalysis(
@@ -376,10 +655,37 @@ export async function buildLiveAnalysis(
   ]);
   const repos = repositorySearch.items ?? [];
 
-  const events = await requestGitHubBestEffort<GitHubEvent[]>(
-    `/users/${username}/events/public?per_page=100`,
-    apiKey,
-  );
+  const sinceDate = toDateFilter(DAYS_IN_SCORING_WINDOW);
+  const [eventPage1, eventPage2, eventPage3, prSearch, issueSearch] = await Promise.all([
+    requestGitHubBestEffort<GitHubEvent[]>(
+      `/users/${username}/events/public?per_page=100&page=1`,
+      apiKey,
+    ),
+    requestGitHubBestEffort<GitHubEvent[]>(
+      `/users/${username}/events/public?per_page=100&page=2`,
+      apiKey,
+    ),
+    requestGitHubBestEffort<GitHubEvent[]>(
+      `/users/${username}/events/public?per_page=100&page=3`,
+      apiKey,
+    ),
+    requestGitHubBestEffort<GitHubIssueSearchResponse>(
+      `/search/issues?q=${encodeURIComponent(
+        `author:${username} type:pr created:>=${sinceDate}`,
+      )}&per_page=1`,
+      apiKey,
+    ),
+    requestGitHubBestEffort<GitHubIssueSearchResponse>(
+      `/search/issues?q=${encodeURIComponent(
+        `author:${username} type:issue created:>=${sinceDate}`,
+      )}&per_page=1`,
+      apiKey,
+    ),
+  ]);
+
+  const events = [eventPage1 ?? [], eventPage2 ?? [], eventPage3 ?? []]
+    .slice(0, MAX_EVENT_PAGES)
+    .flat();
 
   const ownedRepos = repos.filter((repo) => !repo.fork);
   const sortedRepos = [...ownedRepos].sort(
@@ -420,6 +726,10 @@ export async function buildLiveAnalysis(
       weeklyByRepo.set(repoKey, buckets);
     }
   }
+
+  const activityWindowStats = computeActivityWindowStats(events, user.login);
+  const pullRequestCount = Math.max(0, prSearch?.total_count ?? 0);
+  const issueCount = Math.max(0, issueSearch?.total_count ?? 0);
 
   const monthlyRaw = monthlyWindow.map((month) => monthlyMap.get(month.key) ?? 0);
   const maxMonthlyRaw = Math.max(...monthlyRaw, 0);
@@ -501,12 +811,6 @@ export async function buildLiveAnalysis(
   const readmeCoverage =
     enrichedRepos.filter((repo) => repo.hasReadme).length /
     Math.max(1, enrichedRepos.length);
-  const descriptionCoverage =
-    analyzedRepos.filter((repo) => Boolean(repo.description)).length /
-    Math.max(1, analyzedRepos.length);
-  const homepageCoverage =
-    analyzedRepos.filter((repo) => Boolean(repo.homepage)).length /
-    Math.max(1, analyzedRepos.length);
   const recentCoverage =
     analyzedRepos.filter((repo) => daysSince(repo.pushed_at) <= 120).length /
     Math.max(1, analyzedRepos.length);
@@ -519,52 +823,96 @@ export async function buildLiveAnalysis(
     }
   }
 
+  const minScorableRepoSizeKb = getMinimumScorableRepoSizeKb();
+  const qualityStarCap = getQualityStarCapPerRepo();
+  const impactStarCap = getImpactStarCapPerRepo();
+  const impactForkCap = getImpactForkCapPerRepo();
+  const scorableFeaturedRepos = featuredRepos
+    .filter((repo) => repo.size >= minScorableRepoSizeKb)
+    .slice(0, getQualityRepoLimit());
+  const scorableImpactRepos = analyzedRepos
+    .filter((repo) => repo.size >= minScorableRepoSizeKb)
+    .slice(0, getImpactRepoLimit());
+  const ignoredTinyRepos = analyzedRepos.filter(
+    (repo) => repo.size < minScorableRepoSizeKb,
+  ).length;
+
+  const readmeByRepoName = new Map(
+    enrichedRepos.map((repo) => [repo.name.toLowerCase(), repo.hasReadme] as const),
+  );
+
+  const reposWithReadme = scorableFeaturedRepos.filter(
+    (repo) => readmeByRepoName.get(repo.full_name.toLowerCase()) === true,
+  ).length;
+  const qualityStars = scorableFeaturedRepos.reduce(
+    (sum, repo) => sum + Math.min(repo.stargazers_count, qualityStarCap),
+    0,
+  );
+  const impactStars = scorableImpactRepos.reduce(
+    (sum, repo) => sum + Math.min(repo.stargazers_count, impactStarCap),
+    0,
+  );
+  const impactForks = scorableImpactRepos.reduce(
+    (sum, repo) => sum + Math.min(repo.forks_count, impactForkCap),
+    0,
+  );
+  const avgRepoSizeScore = average(
+    scorableFeaturedRepos.map((repo) =>
+      clamp((repo.size - minScorableRepoSizeKb) / 2_000, 0, 1),
+    ),
+  );
+
+  const meaningfulLanguageCount = countMeaningfulLanguages(languageTotals);
+  const frameworkCount = detectFrameworkCount(
+    scorableImpactRepos.length > 0 ? scorableImpactRepos : analyzedRepos,
+  );
+
+  const scoreResult = computeGitInsightScore({
+    commits: activityWindowStats.weightedCommits,
+    prs: pullRequestCount,
+    issues: issueCount,
+    activeDays: activityWindowStats.activeDays,
+    streakDays: activityWindowStats.longestStreak,
+    qualityStars,
+    reposWithReadme,
+    avgRepoSizeScore,
+    impactStars,
+    impactForks,
+    followers: user.followers,
+    externalContributions: activityWindowStats.externalContributions,
+    languages: meaningfulLanguageCount,
+    frameworks: frameworkCount,
+  });
+  const scoreNarratives = buildScoreNarratives(scoreResult.components);
+
   const totalLanguageBytes =
     Array.from(languageTotals.values()).reduce((sum, value) => sum + value, 0) || 1;
-  const uniqueLanguageFactor = clamp(languageTotals.size / 12, 0, 1);
-  const averageRepoQuality = average(enrichedRepos.map((repo) => repo.quality));
-
-  const codeQuality = roundToTenth(
-    clamp(6.2 + (averageRepoQuality - 6.2) * 0.9 + readmeCoverage * 0.35, 6.2, 9.8),
-  );
-  const documentation = roundToTenth(
-    clamp(5.9 + readmeCoverage * 2.6 + descriptionCoverage * 1.2, 5.9, 9.6),
-  );
-  const originality = roundToTenth(
-    clamp(6 + uniqueLanguageFactor * 2.3 + recentCoverage * 1.1, 6, 9.6),
-  );
-  const openSourceActivity = roundToTenth(
-    clamp(5.8 + activityDensity * 2.2 + recentCoverage * 1.4, 5.8, 9.6),
-  );
-  const portfolioCompleteness = roundToTenth(
-    clamp(6 + readmeCoverage * 1.5 + descriptionCoverage + homepageCoverage * 1.1, 6, 9.7),
-  );
 
   const breakdown = [
     {
-      label: "Code quality",
-      value: codeQuality,
-      note: `Average featured-repo quality is ${averageRepoQuality.toFixed(1)}/10, and ${toPercent(recentCoverage)}% of analyzed repositories were updated in the last 120 days.`,
+      label: "Activity",
+      value: scoreResult.components.activity,
+      note: `${activityWindowStats.weightedCommits} weighted commits, ${pullRequestCount} pull requests, and ${issueCount} issues in the last 90 days.`,
     },
     {
-      label: "Documentation",
-      value: documentation,
-      note: `${toPercent(readmeCoverage)}% of featured repositories have substantive README coverage and ${toPercent(descriptionCoverage)}% include clear project descriptions.`,
+      label: "Consistency",
+      value: scoreResult.components.consistency,
+      note: `${activityWindowStats.activeDays} active days over 90 and a longest streak of ${activityWindowStats.longestStreak} days.`,
     },
     {
-      label: "Project originality",
-      value: originality,
-      note: `${languageTotals.size} languages are represented across top repositories, with a language-diversity factor of ${toPercent(uniqueLanguageFactor)}%.`,
+      label: "Code quality proxy",
+      value: scoreResult.components.quality,
+      note: `${reposWithReadme} qualifying repos with substantive README coverage and average repo-size score ${avgRepoSizeScore.toFixed(2)} (0-1).`,
     },
     {
-      label: "Open source activity",
-      value: openSourceActivity,
-      note: `${pushEvents.length} recent public push events were observed, and activity density scores ${toPercent(activityDensity)}% against the current benchmark window.`,
+      label: "Impact",
+      value: scoreResult.components.impact,
+      note: `${impactStars} capped stars, ${impactForks} capped forks, ${user.followers} followers, and ${activityWindowStats.externalContributions} external contributions.`,
     },
     {
-      label: "Portfolio completeness",
-      value: portfolioCompleteness,
-      note: `${toPercent(homepageCoverage)}% of analyzed repositories expose demo/homepage links, and README coverage currently sits at ${toPercent(readmeCoverage)}%.`,
+      label: "Tech breadth",
+      value: scoreResult.components.breadth,
+      note: `${meaningfulLanguageCount} meaningful languages and ${frameworkCount} frameworks detected across scorable repositories.`,
     },
   ];
 
@@ -572,16 +920,17 @@ export async function buildLiveAnalysis(
   const strongestMetric = breakdownByScore[0] ?? breakdown[0];
   const weakestMetric = breakdownByScore[breakdownByScore.length - 1] ?? breakdown[breakdown.length - 1];
 
-  const score = roundToTenth(average(breakdown.map((metric) => metric.value)));
+  const score = scoreResult.finalScore;
   const confidence = roundToTenth(
     clamp(
       0.35 +
-        clamp(analyzedRepos.length / 10, 0, 1) * 0.2 +
-        readmeCoverage * 0.15 +
-        recentCoverage * 0.15 +
-        activityDensity * 0.15,
-      0.2,
-      0.9,
+        clamp(analyzedRepos.length / 12, 0, 1) * 0.22 +
+        readmeCoverage * 0.12 +
+        recentCoverage * 0.12 +
+        clamp(activityWindowStats.activeDays / DAYS_IN_SCORING_WINDOW, 0, 1) * 0.15 -
+        clamp(ignoredTinyRepos / Math.max(1, analyzedRepos.length), 0, 0.2),
+      0.25,
+      0.95,
     ),
   );
 
@@ -608,32 +957,28 @@ export async function buildLiveAnalysis(
     };
   });
 
+  const archetype = detectArchetype(scoreResult.components, skills);
+
   const strengths = [
-    `${user.login} shows a strong portfolio baseline with ${user.public_repos} public repositories and clear shipping momentum.`,
-    readmeCoverage >= 0.7
-      ? "Documentation signal is strong across flagship repositories, improving reviewer trust quickly."
-      : "Repository signal is good; documentation depth in top projects can still be elevated.",
-    totalStars >= 300
-      ? "Community pull is visible through combined stars and recurring engagement on top repositories."
-      : "Project quality appears solid even with modest star counts across top repositories, indicating strong implementation fundamentals.",
+    scoreNarratives.strengthLine,
+    `${user.login} has ${activityWindowStats.activeDays} active days in the last 90 days across ${user.public_repos} public repositories.`,
+    `${toPercent(readmeCoverage)}% README coverage across featured repositories supports reviewer trust and maintainability perception.`,
   ];
 
   const weaknesses = [
-    descriptionCoverage < 0.65
-      ? "Several repositories are missing concise descriptions, making portfolio value harder to parse quickly."
-      : "Repository descriptions are present, but some could communicate impact more clearly.",
-    homepageCoverage < 0.35
-      ? "Few projects expose demos or deployment links, reducing product-readiness signal during review."
-      : "Deployment coverage is present but can be made more consistent across top projects.",
-    activityDensity < 0.35
-      ? "Recent public commit velocity appears light relative to portfolio breadth."
-      : "Recent activity is healthy, but visibility can improve with better change narratives and release notes.",
+    scoreNarratives.weaknessLine,
+    ignoredTinyRepos > 0
+      ? `${ignoredTinyRepos} small repositories were excluded from scoring to reduce gaming by low-signal projects.`
+      : "No repositories were excluded by anti-gaming size filters.",
+    activityWindowStats.spamCommitsSuppressed > 0
+      ? `${activityWindowStats.spamCommitsSuppressed} same-minute commit units were discounted to avoid burst-spam inflation.`
+      : "No commit-burst spam signals were detected in the 90-day activity window.",
   ];
 
   const suggestions = [
-    "Promote one flagship repository with a structured case study that includes constraints, tradeoffs, and impact.",
-    "Standardize README sections (problem, architecture, setup, results) across your top repositories.",
-    "Add demo links or screenshots to high-quality repos so hiring reviewers can evaluate outcomes in seconds.",
+    scoreNarratives.coaching,
+    "Promote one flagship repository with a structured case study covering constraints, tradeoffs, architecture, and outcomes.",
+    "Publish demos and release notes consistently so impact and recency signals stay high without relying on commit volume alone.",
   ];
 
   return {
@@ -643,17 +988,17 @@ export async function buildLiveAnalysis(
     followers: user.followers,
     totalStars,
     repositoriesAnalyzed: analyzedRepos.length,
-    benchmarkDelta: `Top ${scoreToPercentile(score)}% of public technical portfolios`,
+    benchmarkDelta: "Top 50% among analyzed GitInsight profiles",
     headline:
-      score >= 8.4
-        ? `High-signal portfolio with ${toPercent(recentCoverage)}% of analyzed repositories recently active and ${languageTotals.size} languages represented.`
-        : `Technical portfolio with credible execution evidence, with the largest upside in documentation depth and deployment coverage (${toPercent(homepageCoverage)}% linked).`,
+      score >= 80
+        ? `High-signal portfolio with strong momentum: ${activityWindowStats.activeDays} active days in the last 90 and ${meaningfulLanguageCount} meaningful languages.`
+        : `Useful baseline signal with clear upside in ${scoreNarratives.weakestComponent} and open-source visibility.`,
     summary:
-      `${user.login} scored ${score}/10 from ${analyzedRepos.length} analyzed repositories and ${pushEvents.length} recent push events. The strongest measurable signal is ${strongestMetric?.label ?? "code quality"}, while the lowest-scoring area is ${weakestMetric?.label ?? "portfolio completeness"} and should be prioritized in the next iteration.`,
+      `${user.login} scored ${score}/100 from ${analyzedRepos.length} analyzed repositories and ${activityWindowStats.pushEventsLast90} push-event commit units in the last 90 days. Strongest signal: ${strongestMetric?.label ?? "Activity"}. Lowest signal: ${weakestMetric?.label ?? "Impact"}.`,
     highlights: [
-      `Analyzed ${analyzedRepos.length} top repositories and ${pushEvents.length} recent public push events.`,
-      `${readmeCoverage >= 0.7 ? "Strong" : "Moderate"} README coverage across featured repositories.`,
-      `${languageTotals.size} distinct languages detected in the top analyzed projects.`,
+      `Analyzed ${analyzedRepos.length} top repositories and ${events.length} recent public events.`,
+      `${readmeCoverage >= 0.7 ? "Strong" : "Moderate"} README coverage across featured repositories (${toPercent(readmeCoverage)}%).`,
+      `${meaningfulLanguageCount} meaningful languages and ${frameworkCount} frameworks detected in scoring inputs.`,
     ],
     breakdown,
     activity,
@@ -672,5 +1017,18 @@ export async function buildLiveAnalysis(
     strengths,
     weaknesses,
     suggestions,
+    scoreMeta: {
+      archetype,
+      averageDeveloperScore: 56,
+      nextLevel: {
+        targetTopPercent: 10,
+        starsNeeded: Math.max(0, 20 - totalStars),
+        externalContributionsNeeded: Math.max(
+          0,
+          3 - activityWindowStats.externalContributions,
+        ),
+        commitsNeeded: Math.max(0, 40 - activityWindowStats.weightedCommits),
+      },
+    },
   };
 }

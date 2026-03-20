@@ -10,21 +10,21 @@ import type { AnalysisData } from "@/lib/types";
 function createAnalysisFixture(overrides?: Partial<AnalysisData>): AnalysisData {
   return {
     username: "octocat",
-    score: 7,
+    score: 73,
     confidence: 0.7,
     followers: 100,
     totalStars: 200,
     repositoriesAnalyzed: 3,
-    benchmarkDelta: "Top 15%",
+    benchmarkDelta: "Top 15% among analyzed GitInsight profiles",
     headline: "headline",
     summary: "summary",
     highlights: ["h1", "h2", "h3"],
     breakdown: [
-      { label: "Code quality", value: 7.1, note: "n" },
-      { label: "Documentation", value: 6.8, note: "n" },
-      { label: "Project originality", value: 7.2, note: "n" },
-      { label: "Open source activity", value: 6.5, note: "n" },
-      { label: "Portfolio completeness", value: 6.4, note: "n" },
+      { label: "Activity", value: 78, note: "n" },
+      { label: "Consistency", value: 64, note: "n" },
+      { label: "Code quality proxy", value: 71, note: "n" },
+      { label: "Impact", value: 59, note: "n" },
+      { label: "Tech breadth", value: 81, note: "n" },
     ],
     activity: [{ label: "Jan", value: 55 }],
     repositories: [
@@ -59,7 +59,7 @@ const feedback: AiFeedback = {
   strengths: ["s1", "s2", "s3"],
   weaknesses: ["w1", "w2", "w3"],
   suggestions: ["x1", "x2", "x3"],
-  score: 7.3,
+  score: 73,
   confidence: 0.7,
 };
 

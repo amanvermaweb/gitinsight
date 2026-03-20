@@ -25,7 +25,9 @@ GitInsight is a Next.js app that analyzes a GitHub username and generates a tech
 
 - `/`: Landing page with username input.
 - `/analyze/[username]`: Dashboard that fetches live analysis for the selected username.
+- `/analyze/[username]/share`: Share card view backed by the latest cached analysis snapshot.
 - `POST /api/analyze`: Backend analysis endpoint.
+- `GET /api/analyze?username=<name>`: Returns latest shared analysis snapshot for a username.
 
 ## Quick Start
 
@@ -39,7 +41,7 @@ npm install
 
 Create `.env.local`:
 
-Refer to [env.example](.env.example)
+Refer to [.env.example](.env.example)
 
 ### 3. Start development server
 
@@ -78,15 +80,15 @@ Success response (`200`):
     "warning": "AI provider is temporarily unavailable. Returned deterministic system feedback.",
     "analysis": {
         "username": "octocat",
-        "score": 7.8,
+        "score": 78,
         "followers": 123,
         "totalStars": 456,
         "repositoriesAnalyzed": 12,
-        "benchmarkDelta": "Top 12% of public technical portfolios",
+        "benchmarkDelta": "Top 12% among analyzed GitInsight profiles",
         "headline": "...",
         "summary": "...",
         "highlights": ["..."],
-        "breakdown": [{ "label": "Code quality", "value": 8.1, "note": "..." }],
+        "breakdown": [{ "label": "Code quality proxy", "value": 81, "note": "..." }],
         "activity": [{ "label": "Jan", "value": 62 }],
         "repositories": [{ "name": "owner/repo", "stack": ["TypeScript"], "stars": 10, "commits": 30, "quality": 7.9, "readme": "...", "recommendation": "...", "note": "...", "velocity": [3, 6, 7, 5, 8, 6, 9] }],
         "skills": [{ "label": "Frontend", "value": 74 }],
@@ -96,6 +98,10 @@ Success response (`200`):
     }
 }
 ```
+
+### `GET /api/analyze?username=<name>`
+
+Returns the latest share snapshot if available (`200`) or `404` if that username has no recent snapshot.
 
 Error responses return:
 
@@ -110,7 +116,7 @@ Common status codes:
 - `403`: GitHub API forbidden or rate-limited upstream.
 - `404`: GitHub user not found.
 - `429`: Cooldown/rate limit triggered.
-- `500`: Missing server credentials or unexpected failure.
+- `500`: Missing GitHub credentials or unexpected failure.
 - `502`: GitHub upstream failure.
 
 Rate limit headers returned by the API:
@@ -129,13 +135,15 @@ Rate limit headers returned by the API:
 4. Fetch recent public events and repository metadata (languages, README, commit count).
 5. Compute metrics and generate the analysis object.
 6. Load cached AI feedback when available, otherwise call Gemini and cache result.
-7. If AI generation fails, return deterministic scoring-backed feedback and include a response `warning`.
+7. If AI credentials are absent or AI generation fails, return deterministic scoring-backed feedback and include a response `warning`.
+8. Persist a snapshot for the share route (`GET /api/analyze?username=...`).
 
 Notes:
 
 - Public events fetch is best-effort and does not fail the full analysis if unavailable.
 - AI feedback cache keys include `ANALYZE_AI_PROMPT_VERSION` so prompt updates can invalidate old cache entries.
 - If Redis REST config is absent or unavailable, the app falls back to in-memory controls/cache.
+- Share snapshots use `ANALYZE_SHARE_SNAPSHOT_TTL_SECONDS` with Redis or in-memory fallback.
 
 ## Project Structure
 
@@ -158,12 +166,13 @@ lib/
 ## Troubleshooting
 
 - `Server is missing GitHub credentials`: set `GITHUB_TOKEN` (or `GITHUB_PERSONAL_ACCESS_TOKEN`).
-- `Server is missing AI credentials`: set `AI_API_KEY` (or `GEMINI_API_KEY`).
 - `Rate limit exceeded` / cooldown errors: wait for `Retry-After` and tune limits if needed.
-- AI provider outages: the API still returns `200` with deterministic feedback and a `warning` field.
+- AI provider credentials absent/outages: the API still returns `200` with deterministic feedback and a `warning` field.
+- Share route returning `No shared analysis snapshot...`: run `POST /api/analyze` for that username first.
 
 ## Security Notes
 
 - GitHub and AI keys are server-side only; client does not store or send provider tokens.
 - Input usernames are validated against GitHub username rules.
 - The API applies per-IP protection before expensive GitHub/AI calls.
+- Security headers are set centrally in `next.config.ts` (CSP, HSTS, frame/type/referrer/permissions policies).

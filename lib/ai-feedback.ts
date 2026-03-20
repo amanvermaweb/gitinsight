@@ -349,75 +349,15 @@ export function deriveScoringFlags(analysis: AnalysisData): ScoringFlags {
 }
 
 export function computeSystemScore(analysis: AnalysisData): number {
-  const flags = deriveScoringFlags(analysis);
-  const cloneCount = countCloneProjects(analysis);
-  const weightedRepoScore = computeWeightedRepositoryScore(analysis);
-
-  const baseline =
-    analysis.score * SCORING.weights.baselineModel +
-    weightedRepoScore * SCORING.weights.baselineRepo;
-
-  const clonePenalty = Math.min(
-    SCORING.penalties.cloneMax,
-    cloneCount * SCORING.penalties.clonePerProject,
-  );
-  const frontendHeavyPenalty = flags.frontendHeavy ? SCORING.penalties.frontendHeavy : 0;
-  const shallowPenalty = flags.shallowCommits ? SCORING.penalties.shallow : 0;
-  const noBackendPenalty = flags.hasBackend ? 0 : SCORING.penalties.noBackend;
-  const hasDeliverySignals =
-    flags.hasDevOps || flags.hasRealWorldUsage || hasTestingSignals(analysis);
-  const noCICDPenalty = hasDeliverySignals ? 0 : SCORING.penalties.noCICD;
-  const poorDocsPenalty = flags.poorDocumentation ? SCORING.penalties.poorDocs : 0;
-
-  const backendBonus = flags.hasBackend ? SCORING.bonuses.backend : 0;
-  const complexityBonus = hasComplexityBonusSignals(analysis)
-    ? SCORING.bonuses.complexity
-    : 0;
-  const consistencyBonus = qualityConsistencyScore(analysis) >= 0.7
-    ? SCORING.bonuses.consistency
-    : 0;
-  const realWorldBonus = flags.hasRealWorldUsage ? SCORING.bonuses.realWorld : 0;
-
-  const penalties =
-    clonePenalty +
-    frontendHeavyPenalty +
-    shallowPenalty +
-    noBackendPenalty +
-    noCICDPenalty +
-    poorDocsPenalty;
-  const bonuses = backendBonus + complexityBonus + consistencyBonus + realWorldBonus;
-
-  return roundToTenth(clamp(baseline - penalties + bonuses, 0, 10));
+  return Math.round(clamp(analysis.score, 0, 100));
 }
 
 export function computeConfidence(
   analysis: AnalysisData,
-  flags: ScoringFlags,
-  systemScore = computeSystemScore(analysis),
+  _flags: ScoringFlags,
+  _systemScore = computeSystemScore(analysis),
 ) {
-  const repoDepth = clamp(analysis.repositoriesAnalyzed / 8, 0, 1);
-  const commitDepth = clamp(averageRepoCommits(analysis) / 40, 0, 1);
-  const consistencyDepth = qualityConsistencyScore(analysis);
-  const realSignalDepth =
-    [flags.hasBackend, flags.hasDevOps, flags.hasRealWorldUsage].filter(Boolean)
-      .length / 3;
-
-  let confidence =
-    0.2 +
-    repoDepth * 0.2 +
-    commitDepth * 0.25 +
-    consistencyDepth * 0.25 +
-    realSignalDepth * 0.2;
-
-  if (systemScore >= 7.5 && realSignalDepth < 0.5) {
-    confidence -= 0.2;
-  }
-
-  if (systemScore >= 8 && (!flags.hasBackend || flags.shallowCommits || flags.poorDocumentation)) {
-    confidence -= 0.2;
-  }
-
-  return roundToTenth(clamp(confidence, 0.2, 0.9));
+  return roundToTenth(clamp(analysis.confidence, 0.25, 0.95));
 }
 
 function countSummarySentences(summary: string) {
@@ -430,26 +370,26 @@ function countSummarySentences(summary: string) {
 function buildDeterministicFallback(analysis: AnalysisData): AiQualitativeFeedback {
   const sortedBreakdown = [...analysis.breakdown].sort((a, b) => b.value - a.value);
   const strongestMetric = sortedBreakdown[0] ?? {
-    label: "Code quality",
+    label: "Activity",
     value: analysis.score,
     note: "",
   };
   const weakestMetric = sortedBreakdown[sortedBreakdown.length - 1] ?? {
-    label: "Portfolio completeness",
+    label: "Impact",
     value: analysis.score,
     note: "",
   };
   const weakestRepo = [...analysis.repositories].sort((a, b) => a.quality - b.quality)[0];
 
   return {
-    summary: `${analysis.username} shows inconsistent engineering maturity with elevated execution risk. Architecture quality is mixed: ${strongestMetric.label} is ${strongestMetric.value}/10 while ${weakestMetric.label} is ${weakestMetric.value}/10 and remains the main blocker. ${DEFAULT_SUMMARY}`,
+    summary: `${analysis.username} shows inconsistent engineering maturity with elevated execution risk. Architecture quality is mixed: ${strongestMetric.label} is ${strongestMetric.value}/100 while ${weakestMetric.label} is ${weakestMetric.value}/100 and remains the main blocker. ${DEFAULT_SUMMARY}`,
     strengths: [
-      `${strongestMetric.label} is the strongest measurable signal at ${strongestMetric.value}/10 across analyzed repositories.`,
+      `${strongestMetric.label} is the strongest measurable signal at ${strongestMetric.value}/100 across analyzed repositories.`,
       `${analysis.repositoriesAnalyzed} repositories and ${analysis.totalStars} total stars provide a baseline evidence set instead of purely empty portfolio claims.`,
       `${analysis.repositories[0]?.name ?? "Top repository"} has the best repository-level quality and offers the clearest technical proof point in the set.`,
     ],
     weaknesses: [
-      `${weakestMetric.label} at ${weakestMetric.value}/10 indicates weak proof for production-grade execution and increases rejection risk.`,
+      `${weakestMetric.label} at ${weakestMetric.value}/100 indicates weak proof for production-grade execution and increases rejection risk.`,
       `${weakestRepo?.name ?? "The weakest repository"} lacks robust engineering signals and raises maintainability risk under real delivery pressure.`,
       "CI/CD, test coverage, deployment quality, and observability evidence remain insufficiently demonstrated in the available portfolio data.",
     ],

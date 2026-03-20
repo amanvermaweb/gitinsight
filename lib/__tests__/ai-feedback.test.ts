@@ -10,21 +10,21 @@ import type { AnalysisData } from "@/lib/types";
 function createAnalysisFixture(): AnalysisData {
   return {
     username: "octocat",
-    score: 7.2,
+    score: 72,
     confidence: 0.6,
     followers: 120,
     totalStars: 380,
     repositoriesAnalyzed: 6,
-    benchmarkDelta: "Top 12%",
+    benchmarkDelta: "Top 12% among analyzed GitInsight profiles",
     headline: "Strong baseline profile.",
     summary: "Base summary.",
     highlights: ["h1", "h2", "h3"],
     breakdown: [
-      { label: "Code quality", value: 8.1, note: "good" },
-      { label: "Documentation", value: 6.8, note: "mixed" },
-      { label: "Project originality", value: 7.1, note: "good" },
-      { label: "Open source activity", value: 6.9, note: "moderate" },
-      { label: "Portfolio completeness", value: 6.5, note: "needs demos" },
+      { label: "Activity", value: 78, note: "good" },
+      { label: "Consistency", value: 66, note: "mixed" },
+      { label: "Code quality proxy", value: 71, note: "good" },
+      { label: "Impact", value: 69, note: "moderate" },
+      { label: "Tech breadth", value: 65, note: "needs demos" },
     ],
     activity: [
       { label: "Jan", value: 55 },
@@ -100,6 +100,6 @@ describe("ai-feedback deterministic behavior", () => {
     const score = computeSystemScore(analysis);
 
     expect(score).toBeGreaterThanOrEqual(0);
-    expect(score).toBeLessThanOrEqual(10);
+    expect(score).toBeLessThanOrEqual(100);
   });
 });

@@ -261,7 +261,7 @@ export function AnimatedNumber({
 }
 
 export function ScoreRing({ score }: { score: number }) {
-  const progress = `${score * 10}%`;
+  const progress = `${score}%`;
 
   return (
     <div
@@ -276,9 +276,9 @@ export function ScoreRing({ score }: { score: number }) {
           Portfolio
         </p>
         <p className="mt-2 text-4xl font-semibold tracking-[-0.06em] text-(--foreground)">
-          <AnimatedNumber value={score} decimals={1} />
+          <AnimatedNumber value={score} />
         </p>
-        <p className="mt-1 text-sm text-(--muted)">/ 10</p>
+        <p className="mt-1 text-sm text-(--muted)">/ 100</p>
       </div>
     </div>
   );
