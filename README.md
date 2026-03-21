@@ -67,7 +67,7 @@ Request body:
 
 ```json
 {
-    "username": "octocat"
+    "username": "amanvermaweb"
 }
 ```
 
@@ -79,7 +79,7 @@ Success response (`200`):
     "cachedAi": false,
     "warning": "AI provider is temporarily unavailable. Returned deterministic system feedback.",
     "analysis": {
-        "username": "octocat",
+        "username": "amanvermaweb",
         "score": 78,
         "followers": 123,
         "totalStars": 456,
