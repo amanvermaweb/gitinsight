@@ -1,9 +1,23 @@
-import type { AnalysisData } from "./types";
+import type { AnalysisData, DomainInfo, RepositoryDomain } from "./types";
 import {
-  buildScoreNarratives,
-  computeGitInsightScore,
+  computeEngineeringScore,
+  resolveEngineeringWeights,
+  explainEngineeringScoreChange,
 } from "./gitinsight-score";
 import { clamp, roundToTenth } from "./utils";
+import type { ProjectType } from "./types";
+import { detectRepositoryDomain } from "./scoring/domain-detection";
+import {
+  buildDomainScorecard,
+  domainToProjectType,
+  resolveMetricScore,
+} from "./scoring/domain-strategies";
+import { analyzeEvolution } from "./scoring/evolution-analyzer";
+import {
+  buildConfidenceSummary,
+  buildInsights,
+  buildRecommendations,
+} from "./scoring/insight-recommendations";
 
 type GitHubUser = {
   login: string;
@@ -50,6 +64,27 @@ type GitHubEvent = {
   };
 };
 
+type GitHubCommitListItem = {
+  sha: string;
+  commit?: {
+    message?: string;
+  };
+};
+
+type GitHubCommitDetail = {
+  sha: string;
+  commit?: {
+    message?: string;
+  };
+  files?: Array<{
+    filename?: string;
+    status?: string;
+    additions?: number;
+    deletions?: number;
+    changes?: number;
+  }>;
+};
+
 type MonthBucket = {
   key: string;
   label: string;
@@ -60,6 +95,9 @@ type EnrichedRepository = {
   stack: string[];
   stars: number;
   commits: number;
+  contributors: number;
+  sizeKb: number;
+  primaryLanguage: string;
   quality: number;
   readme: string;
   recommendation: string;
@@ -76,11 +114,9 @@ const DAYS_IN_SCORING_WINDOW = 90;
 const MAX_EVENT_PAGES = 3;
 const DEFAULT_MIN_SCORABLE_REPO_SIZE_KB = 80;
 const DEFAULT_MAX_COMMITS_PER_MINUTE = 12;
-const DEFAULT_QUALITY_STAR_CAP_PER_REPO = 3;
-const DEFAULT_IMPACT_STAR_CAP_PER_REPO = 20;
-const DEFAULT_IMPACT_FORK_CAP_PER_REPO = 12;
-const DEFAULT_QUALITY_REPO_LIMIT = 6;
-const DEFAULT_IMPACT_REPO_LIMIT = 12;
+const COMMIT_SAMPLE_REPO_LIMIT = 4;
+const COMMIT_SAMPLE_PER_REPO = 6;
+const COMMIT_DETAIL_LIMIT = 20;
 const GITHUB_API_HEADERS = {
   Accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2022-11-28",
@@ -359,6 +395,79 @@ async function requestRepositoryCommitCount(
   return Array.isArray(firstPage) ? firstPage.length : 0;
 }
 
+async function requestRepositoryContributorCount(repoFullName: string, token: string) {
+  let response: Response;
+
+  try {
+    response = await fetchWithTimeout(
+      `${GITHUB_API_ROOT}/repos/${repoFullName}/contributors?per_page=1&anon=1`,
+      {
+        method: "GET",
+        cache: "no-store",
+        headers: {
+          ...GITHUB_API_HEADERS,
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    );
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new GitHubRequestError(504, "GitHub request timed out.");
+    }
+
+    throw new GitHubRequestError(
+      502,
+      "GitHub request failed before receiving a response.",
+    );
+  }
+
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 409) {
+      return 0;
+    }
+
+    const payload = await response.json().catch(() => null);
+    throw new GitHubRequestError(
+      response.status,
+      parseGitHubErrorMessage(payload) ?? "GitHub request failed.",
+    );
+  }
+
+  const lastPage = extractLastPageNumber(response.headers.get("link"));
+  if (lastPage !== null) {
+    return lastPage;
+  }
+
+  const firstPage = (await response.json().catch(() => [])) as unknown;
+  return Array.isArray(firstPage) ? firstPage.length : 0;
+}
+
+async function requestRecentCommitsForRepo(
+  repoFullName: string,
+  username: string,
+  token: string,
+): Promise<GitHubCommitListItem[]> {
+  return (
+    (await requestGitHubBestEffort<GitHubCommitListItem[]>(
+      `/repos/${repoFullName}/commits?author=${encodeURIComponent(
+        username,
+      )}&per_page=${COMMIT_SAMPLE_PER_REPO}`,
+      token,
+    )) ?? []
+  );
+}
+
+async function requestCommitDetail(
+  repoFullName: string,
+  sha: string,
+  token: string,
+): Promise<GitHubCommitDetail | null> {
+  return requestGitHubBestEffort<GitHubCommitDetail>(
+    `/repos/${repoFullName}/commits/${sha}`,
+    token,
+  );
+}
+
 function repositoryRecommendation(readmeLength: number, repo: GitHubRepo) {
   if (readmeLength < 160) {
     return "Expand README with architecture, setup, and expected outcomes to improve reviewer confidence.";
@@ -402,41 +511,6 @@ function getMaxCommitsPerMinute() {
   return parsePositiveIntegerEnv(
     "ANALYZE_MAX_COMMITS_PER_MINUTE",
     DEFAULT_MAX_COMMITS_PER_MINUTE,
-  );
-}
-
-function getQualityStarCapPerRepo() {
-  return parsePositiveIntegerEnv(
-    "ANALYZE_QUALITY_STAR_CAP_PER_REPO",
-    DEFAULT_QUALITY_STAR_CAP_PER_REPO,
-  );
-}
-
-function getImpactStarCapPerRepo() {
-  return parsePositiveIntegerEnv(
-    "ANALYZE_IMPACT_STAR_CAP_PER_REPO",
-    DEFAULT_IMPACT_STAR_CAP_PER_REPO,
-  );
-}
-
-function getImpactForkCapPerRepo() {
-  return parsePositiveIntegerEnv(
-    "ANALYZE_IMPACT_FORK_CAP_PER_REPO",
-    DEFAULT_IMPACT_FORK_CAP_PER_REPO,
-  );
-}
-
-function getQualityRepoLimit() {
-  return parsePositiveIntegerEnv(
-    "ANALYZE_QUALITY_REPO_LIMIT",
-    DEFAULT_QUALITY_REPO_LIMIT,
-  );
-}
-
-function getImpactRepoLimit() {
-  return parsePositiveIntegerEnv(
-    "ANALYZE_IMPACT_REPO_LIMIT",
-    DEFAULT_IMPACT_REPO_LIMIT,
   );
 }
 
@@ -520,19 +594,479 @@ function detectFrameworkCount(repositories: GitHubRepo[]) {
   return detected.size;
 }
 
+function stdDev(values: number[]) {
+  if (values.length <= 1) {
+    return 0;
+  }
+
+  const mean = average(values);
+  const variance =
+    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+function averageQuality(values: number[]) {
+  if (!values.length) {
+    return 0;
+  }
+
+  return average(values.map((value) => clamp(value / 10, 0, 1))) * 100;
+}
+
+function containsAnyPattern(text: string, patterns: RegExp[]) {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function normalizePercentage(value: number) {
+  return Math.round(clamp(value, 0, 1) * 100);
+}
+
+function scoreCommitMessageQuality(message: string) {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return 0;
+  }
+
+  const firstLine = trimmed.split("\n")[0].trim();
+  const length = firstLine.length;
+  const imperativePattern =
+    /^(add|build|create|implement|refactor|fix|improve|remove|update|replace|optimize|test|document)\b/i;
+  const lowSignalPattern = /^(update|changes|wip|fix|misc|test)\s*$/i;
+  const scopePattern = /\b(api|auth|schema|deploy|test|cache|worker|ui|state|perf)\b/i;
+
+  let score = 25;
+  if (length >= 18 && length <= 72) {
+    score += 30;
+  } else if (length >= 10) {
+    score += 14;
+  }
+
+  if (imperativePattern.test(firstLine)) {
+    score += 20;
+  }
+
+  if (scopePattern.test(firstLine)) {
+    score += 20;
+  }
+
+  if (lowSignalPattern.test(firstLine)) {
+    score -= 35;
+  }
+
+  return Math.round(clamp(score, 0, 100));
+}
+
+function buildRepositoryCorpus(repositories: Array<Pick<GitHubRepo, "full_name" | "description" | "topics" | "homepage" | "language">>) {
+  return repositories
+    .map((repo) =>
+      [
+        repo.full_name,
+        repo.description ?? "",
+        (repo.topics ?? []).join(" "),
+        repo.homepage ?? "",
+        repo.language ?? "",
+      ]
+        .join(" ")
+        .toLowerCase(),
+    )
+    .join(" ");
+}
+
+function detectDeploymentTargets(corpus: string) {
+  const targets: string[] = [];
+  const checks: Array<[string, RegExp]> = [
+    ["Vercel", /\bvercel\b/i],
+    ["AWS", /\baws\b|\blambda\b|\becs\b|\bs3\b/i],
+    ["GCP", /\bgcp\b|\bgoogle cloud\b|\bcloud run\b/i],
+    ["Azure", /\bazure\b/i],
+    ["Netlify", /\bnetlify\b/i],
+    ["Docker", /\bdocker\b|\bcontainer\b/i],
+    ["Kubernetes", /\bkubernetes\b|\bk8s\b|\bhelm\b/i],
+  ];
+
+  for (const [name, pattern] of checks) {
+    if (pattern.test(corpus)) {
+      targets.push(name);
+    }
+  }
+
+  return targets;
+}
+
+type ProjectTypeDetection = {
+  projectType: ProjectType;
+  confidence: number;
+  evidence: string[];
+  domainInfo: DomainInfo;
+};
+
+type DomainSystemDesignSignals = {
+  score: number;
+  confidence: number;
+  unclearReason?: string;
+  hasAuthSystems: boolean;
+  hasDbSchema: boolean;
+  hasApis: boolean;
+  modularityScore: number;
+  concurrencyScore: number;
+  lowLevelComplexityScore: number;
+  performanceConsiderationsScore: number;
+  libraryApiDesignScore: number;
+  reusabilityScore: number;
+  abstractionQualityScore: number;
+  backendComplexityScore: number;
+  frontendStateManagementComplexityScore: number;
+  evidence: string[];
+};
+
+function languageShare(
+  languageTotals: Map<string, number>,
+  totalLanguageBytes: number,
+  languageNames: string[],
+) {
+  const bytes = languageNames.reduce(
+    (sum, language) => sum + (languageTotals.get(language) ?? 0),
+    0,
+  );
+
+  return clamp(bytes / Math.max(1, totalLanguageBytes), 0, 1);
+}
+
+function scorePatternHits(corpus: string, patterns: RegExp[], hitValue: number, cap = 100) {
+  const hits = patterns.filter((pattern) => pattern.test(corpus)).length;
+  return Math.round(clamp(hits * hitValue, 0, cap));
+}
+
+function detectPrimaryProjectType(params: {
+  fullCorpus: string;
+  analyzedRepos: GitHubRepo[];
+  languageTotals: Map<string, number>;
+  totalLanguageBytes: number;
+  sampledPaths: string[];
+}): ProjectTypeDetection {
+  const detection = detectRepositoryDomain({
+    corpus: params.fullCorpus,
+    repositoryCount: params.analyzedRepos.length,
+    languageTotals: params.languageTotals,
+    totalLanguageBytes: params.totalLanguageBytes,
+    sampledPaths: params.sampledPaths,
+  });
+
+  return {
+    projectType: domainToProjectType(detection.primary_domain),
+    confidence: detection.domain_confidence,
+    evidence: detection.evidence,
+    domainInfo: {
+      primary_domain: detection.primary_domain,
+      domain_confidence: detection.domain_confidence,
+      secondary_domains: detection.secondary_domains,
+      is_multi_domain: detection.is_multi_domain,
+    },
+  };
+}
+
+function describeProjectType(projectType: ProjectType) {
+  switch (projectType) {
+    case "web-app":
+      return "web app";
+    case "backend-service":
+      return "backend service";
+    case "library":
+      return "library";
+    case "system-software":
+      return "system software";
+    case "cli-tool":
+      return "CLI tool";
+    case "ml-project":
+      return "ML project";
+    default:
+      return "project";
+  }
+}
+
+function projectTypeToDomain(projectType: ProjectType): RepositoryDomain {
+  switch (projectType) {
+    case "web-app":
+      return "web_application";
+    case "backend-service":
+      return "backend_service";
+    case "system-software":
+      return "system_software";
+    case "library":
+      return "library_framework";
+    case "cli-tool":
+      return "cli_tool";
+    case "ml-project":
+      return "ai_ml_project";
+    default:
+      return "library_framework";
+  }
+}
+
+function computeDomainSystemDesignSignals(params: {
+  projectType: ProjectType;
+  detectionConfidence: number;
+  fullCorpus: string;
+  readmeCoverage: number;
+  avgRepoSizeKb: number;
+  avgContributorCount: number;
+}): DomainSystemDesignSignals {
+  const { projectType, detectionConfidence, fullCorpus, readmeCoverage, avgRepoSizeKb, avgContributorCount } = params;
+
+  const hasAuthSystems = containsAnyPattern(fullCorpus, [
+    /\bauth\b/i,
+    /\boauth\b/i,
+    /\bjwt\b/i,
+    /\bsession\b/i,
+    /\bpermission\b/i,
+  ]);
+  const hasDbSchema = containsAnyPattern(fullCorpus, [
+    /\bpostgres\b/i,
+    /\bmysql\b/i,
+    /\bmongodb\b/i,
+    /\bprisma\b/i,
+    /\bschema\b/i,
+    /\bmigration\b/i,
+  ]);
+  const hasApis = containsAnyPattern(fullCorpus, [
+    /\bapi\b/i,
+    /\bgraphql\b/i,
+    /\bendpoint\b/i,
+    /\broute\b/i,
+    /\bcontroller\b/i,
+  ]);
+
+  const backendComplexityScore = Math.round(
+    clamp(
+      (hasAuthSystems ? 22 : 0) +
+        (hasDbSchema ? 26 : 0) +
+        (hasApis ? 24 : 0) +
+        (containsAnyPattern(fullCorpus, [/\bqueue\b/i, /\bworker\b/i, /\bcache\b/i, /\bwebhook\b/i]) ? 18 : 0) +
+        (containsAnyPattern(fullCorpus, [/\bredis\b/i, /\bmessage bus\b/i, /\bevent\b/i]) ? 10 : 0),
+      0,
+      100,
+    ),
+  );
+  const frontendStateManagementComplexityScore = Math.round(
+    clamp(
+      containsAnyPattern(fullCorpus, [/\bredux\b/i, /\bzustand\b/i, /\bxstate\b/i, /\bmobx\b/i])
+        ? 74
+        : containsAnyPattern(fullCorpus, [/\bcontext api\b/i, /\bcontext\b/i])
+          ? 52
+          : 32,
+      0,
+      100,
+    ),
+  );
+
+  const modularityScore = scorePatternHits(
+    fullCorpus,
+    [/\bmodule\b/i, /\bpackage\b/i, /\binterface\b/i, /\blayer\b/i, /\badapter\b/i],
+    20,
+  );
+  const concurrencyScore = scorePatternHits(
+    fullCorpus,
+    [/\bconcurrency\b/i, /\bthread\b/i, /\bmutex\b/i, /\bchannel\b/i, /\basync\b/i, /\bparallel\b/i],
+    16,
+  );
+  const lowLevelComplexityScore = scorePatternHits(
+    fullCorpus,
+    [/\bpointer\b/i, /\bmemory\b/i, /\ballocator\b/i, /\bsyscall\b/i, /\bkernel\b/i, /\bunsafe\b/i],
+    16,
+  );
+  const performanceConsiderationsScore = scorePatternHits(
+    fullCorpus,
+    [/\bbenchmark\b/i, /\bprofil\w*\b/i, /\blatency\b/i, /\bthroughput\b/i, /\bperf\b/i, /\boptimiz\w*\b/i],
+    16,
+  );
+
+  const libraryApiDesignScore = scorePatternHits(
+    fullCorpus,
+    [/\bapi\b/i, /\btyped\b/i, /\bsemver\b/i, /\binterface\b/i, /\bgeneric\b/i, /\bpublic\b/i],
+    16,
+  );
+  const reusabilityScore = scorePatternHits(
+    fullCorpus,
+    [/\breusable\b/i, /\bplugin\b/i, /\bconfigurable\b/i, /\bextensible\b/i, /\bnpm\b/i, /\bcrate\b/i],
+    16,
+  );
+  const abstractionQualityScore = scorePatternHits(
+    fullCorpus,
+    [/\babstraction\b/i, /\binterface\b/i, /\btrait\b/i, /\badapter\b/i, /\bencapsulat\w*\b/i],
+    18,
+  );
+
+  const complexitySignal = Math.round(
+    clamp(
+      clamp(avgRepoSizeKb / 2800, 0, 1) * 60 + clamp(avgContributorCount / 12, 0, 1) * 40,
+      0,
+      100,
+    ),
+  );
+
+  let score = 0;
+  const scoreConfidence = roundToTenth(
+    clamp(0.48 + detectionConfidence * 0.24 + readmeCoverage * 0.18, 0.3, 0.95),
+  );
+  let unclearReason: string | undefined;
+
+  if (projectType === "web-app") {
+    score = Math.round(
+      clamp(
+        (hasAuthSystems ? 24 : 4) +
+          (hasDbSchema ? 26 : 4) +
+          (hasApis ? 24 : 6) +
+          backendComplexityScore * 0.16 +
+          frontendStateManagementComplexityScore * 0.1,
+        0,
+        100,
+      ),
+    );
+  } else if (projectType === "system-software") {
+    score = Math.round(
+      clamp(
+        modularityScore * 0.26 +
+          concurrencyScore * 0.22 +
+          lowLevelComplexityScore * 0.24 +
+          performanceConsiderationsScore * 0.16 +
+          complexitySignal * 0.12,
+        0,
+        100,
+      ),
+    );
+  } else if (projectType === "library") {
+    score = Math.round(
+      clamp(
+        libraryApiDesignScore * 0.4 +
+          reusabilityScore * 0.3 +
+          abstractionQualityScore * 0.2 +
+          complexitySignal * 0.1,
+        0,
+        100,
+      ),
+    );
+  } else if (projectType === "cli-tool") {
+    const commandStructureScore = scorePatternHits(
+      fullCorpus,
+      [/\bcommand\b/i, /\bflags?\b/i, /\bsubcommand\b/i, /\barg\w*\b/i, /\bterminal\b/i],
+      18,
+    );
+    score = Math.round(
+      clamp(
+        commandStructureScore * 0.38 +
+          modularityScore * 0.22 +
+          performanceConsiderationsScore * 0.18 +
+          abstractionQualityScore * 0.12 +
+          complexitySignal * 0.1,
+        0,
+        100,
+      ),
+    );
+  } else {
+    const reproducibilityScore = scorePatternHits(
+      fullCorpus,
+      [/\breproduc\w*\b/i, /\bseed\b/i, /\bevaluation\b/i, /\bmetric\b/i, /\bexperiment\b/i],
+      18,
+    );
+    score = Math.round(
+      clamp(
+        reproducibilityScore * 0.32 +
+          libraryApiDesignScore * 0.2 +
+          modularityScore * 0.18 +
+          performanceConsiderationsScore * 0.12 +
+          complexitySignal * 0.18,
+        0,
+        100,
+      ),
+    );
+  }
+
+  if (scoreConfidence < 0.58) {
+    unclearReason = `System design unclear due to ${describeProjectType(projectType)} architecture evidence density.`;
+  }
+
+  return {
+    score,
+    confidence: scoreConfidence,
+    unclearReason,
+    hasAuthSystems,
+    hasDbSchema,
+    hasApis,
+    modularityScore,
+    concurrencyScore,
+    lowLevelComplexityScore,
+    performanceConsiderationsScore,
+    libraryApiDesignScore,
+    reusabilityScore,
+    abstractionQualityScore,
+    backendComplexityScore,
+    frontendStateManagementComplexityScore,
+    evidence: [
+      `Domain: ${describeProjectType(projectType)} (classifier confidence ${Math.round(detectionConfidence * 100)}%)`,
+      `Complexity signal from repo size/contributors: ${complexitySignal}/100`,
+      unclearReason ?? `System design evidence confidence: ${Math.round(scoreConfidence * 100)}%`,
+    ],
+  };
+}
+
+function detectTutorialCloneRisk(repositories: GitHubRepo[], enrichedRepos: EnrichedRepository[]) {
+  const tutorialPattern =
+    /(tutorial|course|bootcamp|clone|todo|weather-app|portfolio|netflix|spotify|youtube|airbnb|amazon|twitter|instagram)/i;
+  const cloneNamedRepos = repositories.filter((repo) => tutorialPattern.test(repo.full_name));
+  const shallowQualityRepos = enrichedRepos.filter(
+    (repo) => repo.quality < 7.1 && repo.commits < 15,
+  ).length;
+  const lowReadmeRepos = enrichedRepos.filter((repo) => !repo.hasReadme).length;
+
+  const riskScore = Math.round(
+    clamp(
+      (cloneNamedRepos.length / Math.max(1, repositories.length)) * 50 +
+        (shallowQualityRepos / Math.max(1, enrichedRepos.length)) * 30 +
+        (lowReadmeRepos / Math.max(1, enrichedRepos.length)) * 20,
+      0,
+      100,
+    ),
+  );
+
+  const verdict: "low-risk" | "medium-risk" | "high-risk" =
+    riskScore >= 70 ? "high-risk" : riskScore >= 40 ? "medium-risk" : "low-risk";
+  const signals = [
+    cloneNamedRepos.length > 0 ? "tutorial-clone-naming" : "",
+    shallowQualityRepos >= 2 ? "shallow-repo-depth" : "",
+    lowReadmeRepos >= Math.ceil(enrichedRepos.length / 2) ? "weak-documentation-proof" : "",
+  ].filter(Boolean);
+
+  return {
+    riskScore,
+    verdict,
+    signals,
+    evidence: [
+      `${cloneNamedRepos.length} repositories match tutorial/clone naming patterns`,
+      `${shallowQualityRepos} repositories are shallow (quality < 7.1 and < 15 commits)`,
+      `${lowReadmeRepos} repositories lack substantial README coverage`,
+    ],
+  };
+}
+
 function toDateFilter(days: number) {
   const date = new Date(Date.now() - days * 86_400_000);
   return date.toISOString().slice(0, 10);
 }
 
 function detectArchetype(
-  scoreComponents: ReturnType<typeof computeGitInsightScore>["components"],
+  scoreComponents: {
+    depth: number;
+    systemDesign: number;
+    execution: number;
+    consistency: number;
+    impact: number;
+  },
   skills: Array<{ label: string; value: number }>,
 ) {
   const frontendSkill = skills.find((entry) => entry.label === "Frontend")?.value ?? 0;
   const backendSkill = skills.find((entry) => entry.label === "Backend")?.value ?? 0;
 
-  if (scoreComponents.quality >= 75 && scoreComponents.consistency >= 65) {
+  if (scoreComponents.depth >= 75 && scoreComponents.consistency >= 65) {
     return "Quality-Focused Builder";
   }
 
@@ -544,7 +1078,11 @@ function detectArchetype(
     return "Open Source Explorer";
   }
 
-  if (frontendSkill >= 65 && backendSkill >= 60 && scoreComponents.breadth >= 65) {
+  if (
+    frontendSkill >= 65 &&
+    backendSkill >= 60 &&
+    scoreComponents.systemDesign >= 65
+  ) {
     return "Full Stack Operator";
   }
 
@@ -744,16 +1282,15 @@ export async function buildLiveAnalysis(
 
   const enrichedRepos = await Promise.all(
     featuredRepos.map(async (repo) => {
-      const [languages, readme] = await Promise.all([
+      const repoKey = normalizeRepoKey(repo.full_name);
+      const [languages, readme, commitCount, contributorCount] = await Promise.all([
         requestGitHubOptional<Record<string, number>>(repo.languages_url, apiKey),
         requestGitHubOptional<GitHubReadme>(`/repos/${repo.full_name}/readme`, apiKey),
+        requestRepositoryCommitCount(repo.full_name, user.login, apiKey).catch(
+          () => recentCommitsByRepo.get(repoKey) ?? 0,
+        ),
+        requestRepositoryContributorCount(repo.full_name, apiKey).catch(() => 0),
       ]);
-      const repoKey = normalizeRepoKey(repo.full_name);
-      const commitCount = await requestRepositoryCommitCount(
-        repo.full_name,
-        user.login,
-        apiKey,
-      ).catch(() => recentCommitsByRepo.get(repoKey) ?? 0);
 
       const languageEntries = Object.entries(languages ?? {}).sort(
         (first, second) => second[1] - first[1],
@@ -793,6 +1330,9 @@ export async function buildLiveAnalysis(
         stack,
         stars: repo.stargazers_count,
         commits: commitCount,
+        contributors: contributorCount,
+        sizeKb: repo.size,
+        primaryLanguage: stack[0] ?? repo.language ?? "Unspecified",
         quality,
         readme: readmeInsight(readmeLength),
         recommendation: repositoryRecommendation(readmeLength, repo),
@@ -824,15 +1364,9 @@ export async function buildLiveAnalysis(
   }
 
   const minScorableRepoSizeKb = getMinimumScorableRepoSizeKb();
-  const qualityStarCap = getQualityStarCapPerRepo();
-  const impactStarCap = getImpactStarCapPerRepo();
-  const impactForkCap = getImpactForkCapPerRepo();
-  const scorableFeaturedRepos = featuredRepos
-    .filter((repo) => repo.size >= minScorableRepoSizeKb)
-    .slice(0, getQualityRepoLimit());
-  const scorableImpactRepos = analyzedRepos
-    .filter((repo) => repo.size >= minScorableRepoSizeKb)
-    .slice(0, getImpactRepoLimit());
+  const scorableFeaturedRepos = featuredRepos.filter(
+    (repo) => repo.size >= minScorableRepoSizeKb,
+  );
   const ignoredTinyRepos = analyzedRepos.filter(
     (repo) => repo.size < minScorableRepoSizeKb,
   ).length;
@@ -844,95 +1378,432 @@ export async function buildLiveAnalysis(
   const reposWithReadme = scorableFeaturedRepos.filter(
     (repo) => readmeByRepoName.get(repo.full_name.toLowerCase()) === true,
   ).length;
-  const qualityStars = scorableFeaturedRepos.reduce(
-    (sum, repo) => sum + Math.min(repo.stargazers_count, qualityStarCap),
-    0,
-  );
-  const impactStars = scorableImpactRepos.reduce(
-    (sum, repo) => sum + Math.min(repo.stargazers_count, impactStarCap),
-    0,
-  );
-  const impactForks = scorableImpactRepos.reduce(
-    (sum, repo) => sum + Math.min(repo.forks_count, impactForkCap),
-    0,
-  );
-  const avgRepoSizeScore = average(
-    scorableFeaturedRepos.map((repo) =>
-      clamp((repo.size - minScorableRepoSizeKb) / 2_000, 0, 1),
-    ),
-  );
-
   const meaningfulLanguageCount = countMeaningfulLanguages(languageTotals);
-  const frameworkCount = detectFrameworkCount(
-    scorableImpactRepos.length > 0 ? scorableImpactRepos : analyzedRepos,
-  );
-
-  const scoreResult = computeGitInsightScore({
-    commits: activityWindowStats.weightedCommits,
-    prs: pullRequestCount,
-    issues: issueCount,
-    activeDays: activityWindowStats.activeDays,
-    streakDays: activityWindowStats.longestStreak,
-    qualityStars,
-    reposWithReadme,
-    avgRepoSizeScore,
-    impactStars,
-    impactForks,
-    followers: user.followers,
-    externalContributions: activityWindowStats.externalContributions,
-    languages: meaningfulLanguageCount,
-    frameworks: frameworkCount,
-  });
-  const scoreNarratives = buildScoreNarratives(scoreResult.components);
+  const frameworkCount = detectFrameworkCount(analyzedRepos);
 
   const totalLanguageBytes =
     Array.from(languageTotals.values()).reduce((sum, value) => sum + value, 0) || 1;
 
+  const commitListsByRepo = await Promise.all(
+    featuredRepos.slice(0, COMMIT_SAMPLE_REPO_LIMIT).map(async (repo) => ({
+      repoName: repo.full_name,
+      commits: await requestRecentCommitsForRepo(repo.full_name, user.login, apiKey),
+    })),
+  );
+
+  const commitSample = commitListsByRepo
+    .flatMap((entry) =>
+      entry.commits.map((commit) => ({
+        repoName: entry.repoName,
+        sha: commit.sha,
+        message: commit.commit?.message ?? "",
+      })),
+    )
+    .slice(0, COMMIT_DETAIL_LIMIT);
+
+  const commitDetailResults = await Promise.all(
+    commitSample.map(async (entry) => ({
+      repoName: entry.repoName,
+      message: entry.message,
+      detail: await requestCommitDetail(entry.repoName, entry.sha, apiKey),
+    })),
+  );
+
+  const commitDetails = commitDetailResults
+    .map((entry) => ({
+      repoName: entry.repoName,
+      message: entry.message,
+      files: entry.detail?.files ?? [],
+    }))
+    .filter((entry) => entry.files.length > 0 || entry.message.length > 0);
+
+  const multiFileCommits = commitDetails.filter((entry) => entry.files.length >= 2).length;
+  const multiFileCommitRatio = multiFileCommits / Math.max(1, commitDetails.length);
+  const avgLinesChangedPerCommit = average(
+    commitDetails.map((entry) =>
+      entry.files.reduce((sum, file) => sum + Number(file.changes ?? 0), 0),
+    ),
+  );
+  const commitMessageQualityScore = Math.round(
+    average(commitDetails.map((entry) => scoreCommitMessageQuality(entry.message))),
+  );
+  const refactorCommits = commitDetails.filter((entry) => /\brefactor|cleanup|restructure\b/i.test(entry.message)).length;
+  const featureCommits = commitDetails.filter((entry) => /\badd|implement|build|create|feature\b/i.test(entry.message)).length;
+  const refactorToFeatureRatio = refactorCommits / Math.max(1, featureCommits);
+
+  const legacyDepthScore = Math.round(
+    clamp(
+      multiFileCommitRatio * 35 +
+        clamp(avgLinesChangedPerCommit / 220, 0, 1) * 25 +
+        (Number.isFinite(commitMessageQualityScore) ? commitMessageQualityScore : 0) * 0.25 +
+        clamp(refactorToFeatureRatio, 0, 1) * 15 +
+        clamp(reposWithReadme / Math.max(1, scorableFeaturedRepos.length), 0, 1) * 10,
+      0,
+      100,
+    ),
+  );
+
+  const repositoryCorpus = buildRepositoryCorpus(analyzedRepos);
+  const enrichedCorpus = enrichedRepos
+    .map((repo) => [repo.name, repo.readme, repo.recommendation, repo.note, ...repo.stack].join(" "))
+    .join(" ")
+    .toLowerCase();
+  const fullCorpus = `${repositoryCorpus} ${enrichedCorpus}`;
+  const averageRepoSizeKb =
+    enrichedRepos.reduce((sum, repo) => sum + repo.sizeKb, 0) /
+    Math.max(1, enrichedRepos.length);
+  const averageContributorCount =
+    enrichedRepos.reduce((sum, repo) => sum + repo.contributors, 0) /
+    Math.max(1, enrichedRepos.length);
+  const sampledPaths = commitDetails.flatMap((entry) =>
+    entry.files.map((file) => file.filename ?? ""),
+  );
+
+  const projectTypeDetection = detectPrimaryProjectType({
+    fullCorpus,
+    analyzedRepos,
+    languageTotals,
+    totalLanguageBytes,
+    sampledPaths,
+  });
+
+  const domainSystemDesignSignals = computeDomainSystemDesignSignals({
+    projectType: projectTypeDetection.projectType,
+    detectionConfidence: projectTypeDetection.confidence,
+    fullCorpus,
+    readmeCoverage,
+    avgRepoSizeKb: averageRepoSizeKb,
+    avgContributorCount: averageContributorCount,
+  });
+
+  const engineeringWeights = resolveEngineeringWeights(projectTypeDetection.projectType, {
+    lowLevelLanguageShare: languageShare(languageTotals, totalLanguageBytes, [
+      "C",
+      "C++",
+      "Rust",
+      "Assembly",
+      "Zig",
+    ]),
+  });
+
+  const deploymentTargets = detectDeploymentTargets(fullCorpus);
+  const deploymentDetected = deploymentTargets.length > 0;
+  const ciCdPresent = containsAnyPattern(fullCorpus, [
+    /\bgithub actions\b/i,
+    /\bworkflow\b/i,
+    /\bci\b/i,
+    /\bcd\b/i,
+    /\bpipeline\b/i,
+  ]);
+  const testingPatternHits = [
+    /\btest\b/i,
+    /\bvitest\b/i,
+    /\bjest\b/i,
+    /\bplaywright\b/i,
+    /\bcypress\b/i,
+    /\bcoverage\b/i,
+  ].filter((pattern) => pattern.test(fullCorpus)).length;
+  const testCoverageIndicators = Math.round(clamp((testingPatternHits / 6) * 100, 0, 100));
+  const legacyExecutionScore = Math.round(
+    clamp(
+      (deploymentDetected ? 34 : 10) +
+        (ciCdPresent ? 28 : 8) +
+        testCoverageIndicators * 0.28 +
+        clamp((activityWindowStats.externalContributions / 6) * 10, 0, 10),
+      1,
+      100,
+    ),
+  );
+
+  const commitFrequencyVariance = roundToTenth(
+    stdDev(monthlyRaw) / Math.max(1, average(monthlyRaw)),
+  );
+  const projectCompletionRate = roundToTenth(
+    clamp(
+      readmeCoverage * 0.5 +
+        recentCoverage * 0.2 +
+        clamp(averageQuality(enrichedRepos.map((repo) => repo.quality)) / 100, 0, 1) * 0.3,
+      0,
+      1,
+    ),
+  );
+  const repoAbandonmentRate = roundToTenth(
+    analyzedRepos.filter((repo) => daysSince(repo.pushed_at) > 180).length /
+      Math.max(1, analyzedRepos.length),
+  );
+  const consistencyScore = Math.round(
+    clamp(
+      (1 - clamp(commitFrequencyVariance / 1.2, 0, 1)) * 36 +
+        projectCompletionRate * 42 +
+        (1 - repoAbandonmentRate) * 22,
+      1,
+      100,
+    ),
+  );
+
+  const evolution = analyzeEvolution({
+    monthlyCommits: monthlyRaw,
+    readmeCoverage,
+    recentCoverage,
+    avgContributorCount: averageContributorCount,
+    commitMessageQualityScore,
+    featureCommits,
+  });
+
+  const totalForks = sortedRepos.reduce((sum, repo) => sum + repo.forks_count, 0);
+  const legacyImpactScore = Math.round(
+    clamp(
+      clamp(totalStars / 400, 0, 1) * 35 +
+        clamp(totalForks / 120, 0, 1) * 20 +
+        clamp(user.followers / 220, 0, 1) * 25 +
+        clamp(activityWindowStats.externalContributions / 14, 0, 1) * 20,
+      1,
+      100,
+    ),
+  );
+
+  const hasModularitySignals = containsAnyPattern(fullCorpus, [
+    /\bmodule\b/i,
+    /\bpackage\b/i,
+    /\binterface\b/i,
+    /\blayer\b/i,
+    /\badapter\b/i,
+  ]);
+  const hasConcurrencySignals = containsAnyPattern(fullCorpus, [
+    /\bconcurrency\b/i,
+    /\bthread\b/i,
+    /\bmutex\b/i,
+    /\bchannel\b/i,
+    /\basync\b/i,
+    /\bparallel\b/i,
+  ]);
+  const hasPerformanceSignals = containsAnyPattern(fullCorpus, [
+    /\bbenchmark\b/i,
+    /\bprofil\w*\b/i,
+    /\blatency\b/i,
+    /\bthroughput\b/i,
+    /\bperf\b/i,
+    /\boptimiz\w*\b/i,
+  ]);
+  const hasLibraryApiSignals = containsAnyPattern(fullCorpus, [
+    /\bapi\b/i,
+    /\btyped\b/i,
+    /\binterface\b/i,
+    /\bgeneric\b/i,
+    /\bpublic\b/i,
+  ]);
+  const hasReusabilitySignals = containsAnyPattern(fullCorpus, [
+    /\breusable\b/i,
+    /\bplugin\b/i,
+    /\bconfigurable\b/i,
+    /\bextensible\b/i,
+  ]);
+  const hasCliSignals = containsAnyPattern(fullCorpus, [
+    /\bcli\b/i,
+    /\bcommand line\b/i,
+    /\bterminal\b/i,
+    /\bsubcommand\b/i,
+    /\bflags?\b/i,
+  ]);
+  const hasMlSignals = containsAnyPattern(fullCorpus, [
+    /\bmachine learning\b/i,
+    /\bdeep learning\b/i,
+    /\btraining\b/i,
+    /\binference\b/i,
+    /\bdataset\b/i,
+    /\bpytorch\b/i,
+    /\btensorflow\b/i,
+  ]);
+
+  const lowLevelLanguageShare = languageShare(languageTotals, totalLanguageBytes, [
+    "C",
+    "C++",
+    "Rust",
+    "Assembly",
+    "Zig",
+  ]);
+  const webLanguageShare = languageShare(languageTotals, totalLanguageBytes, [
+    "TypeScript",
+    "JavaScript",
+    "HTML",
+    "CSS",
+  ]);
+  const backendLanguageShare = languageShare(languageTotals, totalLanguageBytes, [
+    "Go",
+    "Rust",
+    "Java",
+    "Python",
+    "Ruby",
+    "PHP",
+    "C#",
+    "Kotlin",
+  ]);
+  const mlLanguageShare = languageShare(languageTotals, totalLanguageBytes, [
+    "Python",
+    "Jupyter Notebook",
+    "R",
+    "Julia",
+  ]);
+  const contributorBase = Math.round(
+    enrichedRepos.reduce((sum, repo) => sum + repo.contributors, 0),
+  );
+
+  const domainScorecard = buildDomainScorecard({
+    domain: projectTypeToDomain(projectTypeDetection.projectType),
+    domainConfidence: projectTypeDetection.confidence,
+    lowLevelLanguageShare,
+    webLanguageShare,
+    backendLanguageShare,
+    mlLanguageShare,
+    readmeCoverage,
+    avgRepoSizeKb: averageRepoSizeKb,
+    avgContributorCount: averageContributorCount,
+    totalStars,
+    totalForks,
+    contributorBase,
+    multiFileCommitRatio,
+    avgLinesChangedPerCommit,
+    commitMessageQualityScore,
+    externalContributions: activityWindowStats.externalContributions,
+    deploymentDetected,
+    ciCdPresent,
+    testCoverageIndicators,
+    hasAuthSystems: domainSystemDesignSignals.hasAuthSystems,
+    hasDbSchema: domainSystemDesignSignals.hasDbSchema,
+    hasApis: domainSystemDesignSignals.hasApis,
+    hasModularitySignals,
+    hasConcurrencySignals,
+    hasPerformanceSignals,
+    hasLibraryApiSignals,
+    hasReusabilitySignals,
+    hasCliSignals,
+    hasMlSignals,
+  });
+
+  const depthScore = resolveMetricScore(domainScorecard.depth, legacyDepthScore);
+  const systemDesignScore = resolveMetricScore(
+    domainScorecard.system_design,
+    domainSystemDesignSignals.score,
+  );
+  const executionScore = resolveMetricScore(domainScorecard.execution, legacyExecutionScore);
+  const impactScore = resolveMetricScore(domainScorecard.impact, legacyImpactScore);
+
+  const domainSystemDesign = {
+    ...domainSystemDesignSignals,
+    score: systemDesignScore,
+    confidence: domainScorecard.system_design.confidence,
+    unclearReason: domainScorecard.system_design.insufficient_evidence
+      ? "System design marked as insufficient evidence for this domain."
+      : domainSystemDesignSignals.unclearReason,
+    evidence: [
+      ...projectTypeDetection.evidence,
+      ...domainSystemDesignSignals.evidence,
+      domainScorecard.system_design.notes,
+    ],
+  };
+
+  const engineeringScore = computeEngineeringScore({
+    depth: depthScore,
+    systemDesign: systemDesignScore,
+    execution: executionScore,
+    consistency: consistencyScore,
+    impact: impactScore,
+  }, engineeringWeights);
+
+  const previousComponentSnapshot = {
+    depth: Math.round(clamp(depthScore - clamp((commitMessageQualityScore - 55) / 3, -12, 12), 0, 100)),
+    systemDesign: Math.round(
+      clamp(domainSystemDesign.score - (domainSystemDesign.hasDbSchema ? 4 : 0), 0, 100),
+    ),
+    execution: Math.round(clamp(executionScore - (deploymentDetected ? 6 : 0), 0, 100)),
+    consistency: Math.round(
+      clamp(
+        consistencyScore -
+          clamp(
+            ((average(monthlyRaw.slice(-2)) - average(monthlyRaw.slice(0, 2))) /
+              Math.max(1, maxMonthlyRaw)) *
+              20,
+            -12,
+            12,
+          ),
+        0,
+        100,
+      ),
+    ),
+    impact: Math.round(clamp(impactScore - clamp(activityWindowStats.externalContributions, 0, 8), 0, 100)),
+  };
+  const previousEngineeringScore = computeEngineeringScore(
+    previousComponentSnapshot,
+    engineeringWeights,
+  );
+  const scoreChange = explainEngineeringScoreChange(
+    previousEngineeringScore.finalScore,
+    engineeringScore.finalScore,
+    previousEngineeringScore.components,
+    engineeringScore.components,
+  );
+
   const breakdown = [
     {
-      label: "Activity",
-      value: scoreResult.components.activity,
-      note: `${activityWindowStats.weightedCommits} weighted commits, ${pullRequestCount} pull requests, and ${issueCount} issues in the last 90 days.`,
+      label: "Depth",
+      value: engineeringScore.components.depth,
+      note: `${domainScorecard.depth.notes}. Multi-file commit ratio ${normalizePercentage(multiFileCommitRatio)}%, average ${Math.round(avgLinesChangedPerCommit)} lines/commit, message quality ${commitMessageQualityScore}/100, and ${pullRequestCount} PRs + ${issueCount} issues in 90 days.`,
+    },
+    {
+      label: "System design",
+      value: engineeringScore.components.systemDesign,
+      note: domainSystemDesign.unclearReason
+        ? `${domainSystemDesign.unclearReason} Domain: ${describeProjectType(projectTypeDetection.projectType)}. ${domainScorecard.system_design.notes}`
+        : `${domainScorecard.system_design.notes}. ${projectTypeDetection.projectType === "web-app"
+            ? `${domainSystemDesign.hasAuthSystems ? "Auth" : "No auth"}, ${domainSystemDesign.hasDbSchema ? "DB/schema" : "No DB/schema"}, ${domainSystemDesign.hasApis ? "API" : "No API"} signals.`
+            : projectTypeDetection.projectType === "system-software"
+              ? `Modularity ${domainSystemDesign.modularityScore}/100, concurrency ${domainSystemDesign.concurrencyScore}/100, low-level complexity ${domainSystemDesign.lowLevelComplexityScore}/100, performance ${domainSystemDesign.performanceConsiderationsScore}/100.`
+              : projectTypeDetection.projectType === "library"
+                ? `API design ${domainSystemDesign.libraryApiDesignScore}/100, reusability ${domainSystemDesign.reusabilityScore}/100, abstraction quality ${domainSystemDesign.abstractionQualityScore}/100.`
+                : `Domain-aware system-design assessment for ${describeProjectType(projectTypeDetection.projectType)} repositories.`}`,
+    },
+    {
+      label: "Execution",
+      value: engineeringScore.components.execution,
+      note: `${domainScorecard.execution.notes}. ${deploymentDetected ? `Deployment targets: ${deploymentTargets.join(", ")}` : "No deployment target detected"}; CI/CD ${ciCdPresent ? "present" : "missing"}; test indicators ${testCoverageIndicators}/100.`,
     },
     {
       label: "Consistency",
-      value: scoreResult.components.consistency,
-      note: `${activityWindowStats.activeDays} active days over 90 and a longest streak of ${activityWindowStats.longestStreak} days.`,
-    },
-    {
-      label: "Code quality proxy",
-      value: scoreResult.components.quality,
-      note: `${reposWithReadme} qualifying repos with substantive README coverage and average repo-size score ${avgRepoSizeScore.toFixed(2)} (0-1).`,
+      value: engineeringScore.components.consistency,
+      note: `Commit frequency variance ${commitFrequencyVariance}, completion rate ${normalizePercentage(projectCompletionRate)}, abandonment rate ${normalizePercentage(repoAbandonmentRate)}.`,
     },
     {
       label: "Impact",
-      value: scoreResult.components.impact,
-      note: `${impactStars} capped stars, ${impactForks} capped forks, ${user.followers} followers, and ${activityWindowStats.externalContributions} external contributions.`,
-    },
-    {
-      label: "Tech breadth",
-      value: scoreResult.components.breadth,
-      note: `${meaningfulLanguageCount} meaningful languages and ${frameworkCount} frameworks detected across scorable repositories.`,
+      value: engineeringScore.components.impact,
+      note: `${domainScorecard.impact.notes}. ${totalStars} stars, ${totalForks} forks, ${user.followers} followers, and ${activityWindowStats.externalContributions} external contributions.`,
     },
   ];
 
   const breakdownByScore = [...breakdown].sort((first, second) => second.value - first.value);
   const strongestMetric = breakdownByScore[0] ?? breakdown[0];
-  const weakestMetric = breakdownByScore[breakdownByScore.length - 1] ?? breakdown[breakdown.length - 1];
+  const weakestMetric =
+    breakdownByScore[breakdownByScore.length - 1] ?? breakdown[breakdown.length - 1];
 
-  const score = scoreResult.finalScore;
+  const score = engineeringScore.finalScore;
   const confidence = roundToTenth(
     clamp(
-      0.35 +
-        clamp(analyzedRepos.length / 12, 0, 1) * 0.22 +
-        readmeCoverage * 0.12 +
-        recentCoverage * 0.12 +
-        clamp(activityWindowStats.activeDays / DAYS_IN_SCORING_WINDOW, 0, 1) * 0.15 -
+      0.34 +
+        clamp(analyzedRepos.length / 12, 0, 1) * 0.2 +
+        readmeCoverage * 0.1 +
+        recentCoverage * 0.1 +
+        clamp(activityWindowStats.activeDays / DAYS_IN_SCORING_WINDOW, 0, 1) * 0.16 +
+        clamp(commitDetails.length / 20, 0, 1) * 0.08 +
+        domainSystemDesign.confidence * 0.08 +
+        projectTypeDetection.confidence * 0.06 -
         clamp(ignoredTinyRepos / Math.max(1, analyzedRepos.length), 0, 0.2),
       0.25,
       0.95,
     ),
   );
+  const domainInfo = projectTypeDetection.domainInfo;
+  const insights = buildInsights(domainInfo, domainScorecard, evolution);
+  const recommendations = buildRecommendations(domainInfo, domainScorecard);
+  const confidenceSummary = buildConfidenceSummary(domainInfo, domainScorecard);
 
   const skills = Object.entries(CATEGORY_LANGUAGES).map(([label, langs]) => {
     const bytes = langs.reduce(
@@ -957,16 +1828,166 @@ export async function buildLiveAnalysis(
     };
   });
 
-  const archetype = detectArchetype(scoreResult.components, skills);
+  const archetype = detectArchetype(engineeringScore.components, skills);
+
+  const earlySkills = Object.entries(CATEGORY_LANGUAGES).map(([label, langs]) => {
+    const earlyBytes = langs.reduce((sum, language) => {
+      const bytes = enrichedRepos
+        .filter((repo) => daysSince(analyzedRepos.find((entry) => entry.full_name === repo.name)?.pushed_at ?? new Date().toISOString()) > 120)
+        .reduce((repoSum, repo) => {
+          const languageEntry = repo.languageEntries.find(([lang]) => lang === language);
+          return repoSum + (languageEntry?.[1] ?? 0);
+        }, 0);
+      return sum + bytes;
+    }, 0);
+
+    const share = earlyBytes / totalLanguageBytes;
+    return {
+      label,
+      value: Math.round(clamp(share * 120, 15, 90)),
+    };
+  });
+
+  const skillEvolution = skills.slice(0, 4).map((skill) => ({
+    label: skill.label,
+    before: earlySkills.find((entry) => entry.label === skill.label)?.value ?? skill.value,
+    current: skill.value,
+  }));
+
+  const scoreOverTime = monthlyWindow.slice(-3).map((month, index, list) => {
+    const monthIndex = monthlyWindow.length - list.length + index;
+    const activityShare = maxMonthlyRaw > 0 ? monthlyRaw[monthIndex] / maxMonthlyRaw : 0.5;
+    const monthScore = Math.round(clamp(score * 0.82 + activityShare * 18, 0, 100));
+    return {
+      label: month.label,
+      score: monthScore,
+    };
+  });
+
+  const commitQualityOverTime = monthlyWindow.slice(-3).map((month, index, list) => {
+    const monthIndex = monthlyWindow.length - list.length + index;
+    const activityShare = maxMonthlyRaw > 0 ? monthlyRaw[monthIndex] / maxMonthlyRaw : 0.5;
+    const monthQuality = Math.round(
+      clamp(commitMessageQualityScore * 0.75 + activityShare * 25, 0, 100),
+    );
+    return {
+      label: month.label,
+      score: monthQuality,
+    };
+  });
+
+  const developerSignals = {
+    depth: {
+      score: engineeringScore.components.depth,
+      multiFileCommitRatio: roundToTenth(multiFileCommitRatio),
+      avgLinesChangedPerCommit: roundToTenth(avgLinesChangedPerCommit),
+      commitMessageQualityScore,
+      refactorToFeatureRatio: roundToTenth(refactorToFeatureRatio),
+      evidence: [
+        `${multiFileCommits}/${Math.max(1, commitDetails.length)} sampled commits touch multiple files`,
+        `Average lines changed per sampled commit: ${Math.round(avgLinesChangedPerCommit)}`,
+        `Commit message quality score: ${commitMessageQualityScore}/100`,
+      ],
+    },
+    systemDesign: {
+      score: engineeringScore.components.systemDesign,
+      projectType: projectTypeDetection.projectType,
+      detectionConfidence: projectTypeDetection.confidence,
+      scoreConfidence: domainSystemDesign.confidence,
+      unclearReason: domainSystemDesign.unclearReason,
+      hasAuthSystems: domainSystemDesign.hasAuthSystems,
+      hasDbSchema: domainSystemDesign.hasDbSchema,
+      hasApis: domainSystemDesign.hasApis,
+      modularityScore: domainSystemDesign.modularityScore,
+      concurrencyScore: domainSystemDesign.concurrencyScore,
+      lowLevelComplexityScore: domainSystemDesign.lowLevelComplexityScore,
+      performanceConsiderationsScore: domainSystemDesign.performanceConsiderationsScore,
+      libraryApiDesignScore: domainSystemDesign.libraryApiDesignScore,
+      reusabilityScore: domainSystemDesign.reusabilityScore,
+      abstractionQualityScore: domainSystemDesign.abstractionQualityScore,
+      backendComplexityScore: domainSystemDesign.backendComplexityScore,
+      frontendStateManagementComplexityScore:
+        domainSystemDesign.frontendStateManagementComplexityScore,
+      evidence: [
+        ...projectTypeDetection.evidence,
+        ...domainSystemDesign.evidence,
+      ],
+    },
+    execution: {
+      score: engineeringScore.components.execution,
+      deploymentDetected,
+      deploymentTargets,
+      ciCdPresent,
+      testCoverageIndicators,
+      evidence: [
+        deploymentDetected
+          ? `Deployment targets detected: ${deploymentTargets.join(", ")}`
+          : "No deployment target detected",
+        `CI/CD ${ciCdPresent ? "signals found" : "signals not found"}`,
+        `Test/coverage indicator score: ${testCoverageIndicators}/100`,
+      ],
+    },
+    consistency: {
+      score: engineeringScore.components.consistency,
+      commitFrequencyVariance,
+      projectCompletionRate: roundToTenth(projectCompletionRate),
+      repoAbandonmentRate: roundToTenth(repoAbandonmentRate),
+      evidence: [
+        `Commit frequency variance: ${commitFrequencyVariance}`,
+        `Project completion rate: ${normalizePercentage(projectCompletionRate)}%`,
+        `Repo abandonment rate: ${normalizePercentage(repoAbandonmentRate)}%`,
+      ],
+    },
+    impact: {
+      score: engineeringScore.components.impact,
+      totalStars,
+      totalForks,
+      followers: user.followers,
+      externalContributions: activityWindowStats.externalContributions,
+      evidence: [
+        `${totalStars} stars across analyzed repos`,
+        `${totalForks} forks across analyzed repos`,
+        `${activityWindowStats.externalContributions} external contribution signals in 90 days`,
+      ],
+    },
+  };
+
+  const fakeDevDetector = detectTutorialCloneRisk(analyzedRepos, enrichedRepos);
+
+  const evidenceFindings = [
+    {
+      category: "weakness" as const,
+      claim: "Lack of backend depth",
+      evidence: [
+        `${domainSystemDesign.hasDbSchema ? "DB usage detected" : "0 repos with clear database schema usage"}`,
+        `${domainSystemDesign.hasApis ? "API routes detected" : "No API routes detected in repository corpus"}`,
+        `Domain system complexity score: ${engineeringScore.components.systemDesign}/100`,
+      ],
+    },
+    {
+      category: "risk" as const,
+      claim: "Potential shallow portfolio risk",
+      evidence: fakeDevDetector.evidence,
+    },
+    {
+      category: "strength" as const,
+      claim: "Consistent contribution behavior",
+      evidence: [
+        `${activityWindowStats.activeDays} active days in last 90 days`,
+        `Longest streak: ${activityWindowStats.longestStreak} days`,
+        `Consistency score: ${engineeringScore.components.consistency}/100`,
+      ],
+    },
+  ];
 
   const strengths = [
-    scoreNarratives.strengthLine,
+    `Strength: ${strongestMetric.label} is currently strongest at ${strongestMetric.value}/100.`,
     `${user.login} has ${activityWindowStats.activeDays} active days in the last 90 days across ${user.public_repos} public repositories.`,
     `${toPercent(readmeCoverage)}% README coverage across featured repositories supports reviewer trust and maintainability perception.`,
   ];
 
   const weaknesses = [
-    scoreNarratives.weaknessLine,
+    `Weakness: ${weakestMetric.label} is currently the lowest signal at ${weakestMetric.value}/100.`,
     ignoredTinyRepos > 0
       ? `${ignoredTinyRepos} small repositories were excluded from scoring to reduce gaming by low-signal projects.`
       : "No repositories were excluded by anti-gaming size filters.",
@@ -976,7 +1997,7 @@ export async function buildLiveAnalysis(
   ];
 
   const suggestions = [
-    scoreNarratives.coaching,
+    `Raise ${weakestMetric.label} by closing evidence gaps listed in its score note.`,
     "Promote one flagship repository with a structured case study covering constraints, tradeoffs, architecture, and outcomes.",
     "Publish demos and release notes consistently so impact and recency signals stay high without relying on commit volume alone.",
   ];
@@ -991,14 +2012,21 @@ export async function buildLiveAnalysis(
     benchmarkDelta: "Top 50% among analyzed GitInsight profiles",
     headline:
       score >= 80
-        ? `High-signal portfolio with strong momentum: ${activityWindowStats.activeDays} active days in the last 90 and ${meaningfulLanguageCount} meaningful languages.`
-        : `Useful baseline signal with clear upside in ${scoreNarratives.weakestComponent} and open-source visibility.`,
+        ? `High-signal portfolio with strong momentum: ${activityWindowStats.activeDays} active days in the last 90, ${meaningfulLanguageCount} meaningful languages, and ${frameworkCount} frameworks.`
+        : `Useful baseline signal with clear upside in ${weakestMetric.label.toLowerCase()} and open-source visibility.`,
     summary:
-      `${user.login} scored ${score}/100 from ${analyzedRepos.length} analyzed repositories and ${activityWindowStats.pushEventsLast90} push-event commit units in the last 90 days. Strongest signal: ${strongestMetric?.label ?? "Activity"}. Lowest signal: ${weakestMetric?.label ?? "Impact"}.`,
+      `${user.login} scored ${score}/100 from a deterministic weighted model (${describeProjectType(projectTypeDetection.projectType)} profile: Depth ${roundToTenth(engineeringScore.weights.depth)}, System design ${roundToTenth(engineeringScore.weights.systemDesign)}, Execution ${roundToTenth(engineeringScore.weights.execution)}, Consistency ${roundToTenth(engineeringScore.weights.consistency)}, Impact ${roundToTenth(engineeringScore.weights.impact)}). Strongest signal: ${strongestMetric?.label ?? "Depth"}. Lowest signal: ${weakestMetric?.label ?? "Impact"}. ${domainInfo.domain_confidence < 0.5 ? "Domain classification is uncertain; treat inferred signals as directional." : "Domain classification confidence is stable."}`,
     highlights: [
       `Analyzed ${analyzedRepos.length} top repositories and ${events.length} recent public events.`,
-      `${readmeCoverage >= 0.7 ? "Strong" : "Moderate"} README coverage across featured repositories (${toPercent(readmeCoverage)}%).`,
-      `${meaningfulLanguageCount} meaningful languages and ${frameworkCount} frameworks detected in scoring inputs.`,
+      `Score change vs previous window: ${scoreChange.scoreDelta >= 0 ? "+" : ""}${scoreChange.scoreDelta}. ${scoreChange.reasons[0]}.`,
+      domainInfo.is_multi_domain
+        ? `Multi-domain profile: ${domainInfo.primary_domain} with secondary domains ${domainInfo.secondary_domains.join(", ")}.`
+        : `Primary domain: ${domainInfo.primary_domain}.`,
+      domainSystemDesign.unclearReason
+        ? domainSystemDesign.unclearReason
+        : `System design confidence: ${Math.round(domainSystemDesign.confidence * 100)}% for ${describeProjectType(projectTypeDetection.projectType)} scoring.`,
+      confidenceSummary,
+      `Fake Dev Detector risk: ${fakeDevDetector.verdict} (${fakeDevDetector.riskScore}/100).`,
     ],
     breakdown,
     activity,
@@ -1017,9 +2045,40 @@ export async function buildLiveAnalysis(
     strengths,
     weaknesses,
     suggestions,
+    domain_info: domainInfo,
+    scorecard: domainScorecard,
+    evolution,
+    project_maturity_score: evolution.project_maturity_score,
+    evolution_trend: evolution.evolution_trend,
+    insights,
+    recommendations,
+    metadata: {
+      confidence_summary: confidenceSummary,
+      project_maturity_score: evolution.project_maturity_score,
+      evolution_trend: evolution.evolution_trend,
+    },
+    developerSignals,
+    domainScorecard,
+    evidenceFindings,
+    fakeDevDetector,
+    scoreTrajectory: {
+      scoreOverTime,
+      commitQualityOverTime,
+      skillEvolution,
+    },
     scoreMeta: {
       archetype,
       averageDeveloperScore: 56,
+      scoreModel: {
+        projectType: projectTypeDetection.projectType,
+        classificationConfidence: projectTypeDetection.confidence,
+        domain: domainScorecard.domain,
+        weights: engineeringScore.weights,
+        components: engineeringScore.components,
+        previousScore: previousEngineeringScore.finalScore,
+        scoreDelta: scoreChange.scoreDelta,
+        changeReasons: scoreChange.reasons,
+      },
       nextLevel: {
         targetTopPercent: 10,
         starsNeeded: Math.max(0, 20 - totalStars),

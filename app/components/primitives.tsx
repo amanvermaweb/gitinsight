@@ -1,11 +1,11 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Share2 } from "lucide-react";
 import { useEffect, useId, useState, useSyncExternalStore } from "react";
 import { THEME_STORAGE_KEY } from "@/lib/constants";
 import type { AnalysisData, ThemeMode } from "@/lib/types";
 import { clamp } from "@/lib/utils";
+import Image from "next/image";
 
 function getSystemTheme(): ThemeMode {
   if (typeof window === "undefined") {
@@ -95,7 +95,14 @@ export function usePersistedTheme(): [ThemeMode, (nextTheme: ThemeMode) => void]
 export function GitInsightMark() {
   return (
     <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/8 bg-white/6 shadow-[0_12px_40px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-      <Share2 aria-hidden="true" className="h-5 w-5 text-(--accent-strong)" strokeWidth={1.8} />
+      <Image
+        src="/icon.svg"
+        alt="GitInsight"
+        width={36}
+        height={36}
+        className="h-9 w-9"
+        priority
+      />
     </div>
   );
 }

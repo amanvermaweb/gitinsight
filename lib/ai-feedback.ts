@@ -7,8 +7,9 @@ type AiQualitativeFeedback = Pick<
   "summary" | "strengths" | "weaknesses" | "suggestions"
 >;
 
-export type AiFeedback = AiQualitativeFeedback &
-  Pick<AnalysisData, "score" | "confidence">;
+type AnalysisRepository = AnalysisData["repositories"][number];
+
+export type AiFeedback = AiQualitativeFeedback;
 
 export type ScoringFlags = {
   hasCloneProjects: boolean;
@@ -20,10 +21,19 @@ export type ScoringFlags = {
   poorDocumentation: boolean;
 };
 
+type EvidenceAnchors = {
+  all: Set<string>;
+  strict: Set<string>;
+};
+
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const DEFAULT_AI_TIMEOUT_MS = 12_000;
 const DEFAULT_SUMMARY =
   "Evidence is limited, architecture depth is unclear, and hiring risk remains high without stronger operational proof.";
+const SPECULATIVE_PATTERN =
+  /\b(maybe|might|probably|likely|possibly|guess|assume|appears|seems|feels like|could be)\b/i;
+const SOFT_INTERVIEWER_PATTERN =
+  /\b(great|excellent|impressive|promising|potential|talented|strong candidate|would hire)\b/i;
 
 const SCORING = {
   penalties: {
@@ -69,11 +79,11 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
   return value;
 }
 
-function getAiTimeoutMs() {
+function getAiTimeoutMs(): number {
   return parsePositiveIntegerEnv("ANALYZE_AI_TIMEOUT_MS", DEFAULT_AI_TIMEOUT_MS);
 }
 
-function isAbortError(error: unknown) {
+function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
@@ -95,7 +105,7 @@ async function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
   }
 }
 
-function normalizeText(value: unknown, fallback: string) {
+function normalizeText(value: unknown, fallback: string): string {
   if (typeof value !== "string") {
     return fallback;
   }
@@ -104,7 +114,7 @@ function normalizeText(value: unknown, fallback: string) {
   return normalized || fallback;
 }
 
-function normalizeList(value: unknown, fallback: string[]) {
+function normalizeList(value: unknown, fallback: string[]): string[] {
   if (!Array.isArray(value)) {
     return fallback;
   }
@@ -115,10 +125,10 @@ function normalizeList(value: unknown, fallback: string[]) {
     .filter(Boolean)
     .slice(0, 5);
 
-  return cleaned.length >= 3 ? cleaned : fallback;
+  return cleaned.length >= 2 ? cleaned : fallback;
 }
 
-function extractJsonObject(raw: string) {
+function extractJsonObject(raw: string): string {
   const trimmed = raw.trim();
 
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
@@ -135,40 +145,40 @@ function extractJsonObject(raw: string) {
   return trimmed;
 }
 
-function metricValue(analysis: AnalysisData, label: string) {
+function metricValue(analysis: AnalysisData, label: string): number {
   return (
     analysis.breakdown.find((metric) => metric.label.toLowerCase() === label.toLowerCase())
       ?.value ?? analysis.score
   );
 }
 
-function skillValue(analysis: AnalysisData, label: string) {
+function skillValue(analysis: AnalysisData, label: string): number {
   return (
     analysis.skills.find((skill) => skill.label.toLowerCase() === label.toLowerCase())
       ?.value ?? 0
   );
 }
 
-function averageRepoCommits(analysis: AnalysisData) {
+function averageRepoCommits(analysis: AnalysisData): number {
   return (
     analysis.repositories.reduce((sum, repo) => sum + repo.commits, 0) /
     Math.max(1, analysis.repositories.length)
   );
 }
 
-function repositoryCorpus(repo: AnalysisData["repositories"][number]) {
+function buildRepositoryText(repo: AnalysisRepository): string {
   return [repo.name, ...repo.stack, repo.readme, repo.recommendation, repo.note]
     .join(" ")
     .toLowerCase();
 }
 
-function portfolioCorpus(analysis: AnalysisData) {
+function buildPortfolioText(analysis: AnalysisData): string {
   const breakdownText = analysis.breakdown
     .map((metric) => `${metric.label} ${metric.note}`)
     .join(" ")
     .toLowerCase();
   const repositoryText = analysis.repositories
-    .map((repo) => repositoryCorpus(repo))
+    .map((repo) => buildRepositoryText(repo))
     .join(" ");
 
   return [
@@ -182,7 +192,7 @@ function portfolioCorpus(analysis: AnalysisData) {
     .toLowerCase();
 }
 
-function sentenceHasPositiveSignal(sentence: string, keywordPattern: RegExp) {
+function sentenceHasPositiveSignal(sentence: string, keywordPattern: RegExp): boolean {
   if (!keywordPattern.test(sentence)) {
     return false;
   }
@@ -209,7 +219,7 @@ function hasBackendSignals(analysis: AnalysisData) {
   const middlewarePattern = /(middleware|queue|worker|cache|throttle|rate limit|webhook)/i;
 
   const meaningfulBackendRepos = analysis.repositories.filter((repo) => {
-    const text = repositoryCorpus(repo);
+    const text = buildRepositoryText(repo);
     const signalCount = [
       dbPattern.test(text),
       apiPattern.test(text),
@@ -227,23 +237,18 @@ function hasBackendSignals(analysis: AnalysisData) {
   );
 }
 
-function hasTestingSignals(analysis: AnalysisData) {
-  const testingPattern = /(test|coverage|unit test|integration test|e2e|playwright|jest|vitest)/i;
-  return testingPattern.test(portfolioCorpus(analysis));
-}
-
 function hasDevOpsSignals(analysis: AnalysisData) {
   const devopsPattern =
     /(ci|cd|pipeline|github actions|workflow|docker|kubernetes|helm|terraform|deploy|deployment|release|monitoring|observability|sentry)/i;
 
-  return devopsPattern.test(portfolioCorpus(analysis));
+  return devopsPattern.test(buildPortfolioText(analysis));
 }
 
 function hasRealWorldUsageSignals(analysis: AnalysisData) {
   const evidencePattern =
     /(https?:\/\/|live|production|deployed|deployment|demo|vercel|netlify|render|railway|cloudflare|aws|gcp|azure|uptime|users)/i;
 
-  const sentences = portfolioCorpus(analysis)
+  const sentences = buildPortfolioText(analysis)
     .split(/[.!?\n]+/)
     .map((entry) => entry.trim())
     .filter(Boolean);
@@ -284,58 +289,6 @@ function hasShallowContributionSignals(analysis: AnalysisData) {
   );
 }
 
-function computeWeightedRepositoryScore(analysis: AnalysisData) {
-  const sorted = [...analysis.repositories]
-    .map((repo) => repo.quality)
-    .sort((a, b) => b - a);
-
-  if (!sorted.length) {
-    return analysis.score;
-  }
-
-  if (sorted.length === 1) {
-    return sorted[0];
-  }
-
-  const top23Weight = (SCORING.weights.top3Total - SCORING.weights.top1) / 2;
-  const top1 = sorted[0] * SCORING.weights.top1;
-  const second = (sorted[1] ?? sorted[0]) * top23Weight;
-  const third = (sorted[2] ?? sorted[1] ?? sorted[0]) * top23Weight;
-  const remainderValues = sorted.slice(3);
-  const remainderAverage = remainderValues.length
-    ? remainderValues.reduce((sum, value) => sum + value, 0) / remainderValues.length
-    : sorted[Math.min(2, sorted.length - 1)];
-  const remainder = remainderAverage * SCORING.weights.remaining;
-
-  return top1 + second + third + remainder;
-}
-
-function qualityConsistencyScore(analysis: AnalysisData) {
-  const qualities = analysis.repositories.map((repo) => repo.quality);
-
-  if (qualities.length <= 1) {
-    return 0.4;
-  }
-
-  const mean = qualities.reduce((sum, value) => sum + value, 0) / qualities.length;
-  const variance =
-    qualities.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
-    qualities.length;
-  const stdDev = Math.sqrt(variance);
-
-  return clamp(1 - stdDev / 2.5, 0, 1);
-}
-
-function hasComplexityBonusSignals(analysis: AnalysisData) {
-  const nonTrivialRepos = analysis.repositories.filter(
-    (repo) =>
-      repo.quality >= SCORING.thresholds.nonTrivialRepoQuality &&
-      repo.commits >= SCORING.thresholds.nonTrivialRepoCommits,
-  ).length;
-
-  return nonTrivialRepos >= 2;
-}
-
 export function deriveScoringFlags(analysis: AnalysisData): ScoringFlags {
   return {
     hasCloneProjects: countCloneProjects(analysis) > 0,
@@ -354,17 +307,118 @@ export function computeSystemScore(analysis: AnalysisData): number {
 
 export function computeConfidence(
   analysis: AnalysisData,
-  _flags: ScoringFlags,
-  _systemScore = computeSystemScore(analysis),
-) {
+): number {
   return roundToTenth(clamp(analysis.confidence, 0.25, 0.95));
 }
 
-function countSummarySentences(summary: string) {
+function countSummarySentences(summary: string): number {
   return summary
     .split(/[.!?]+/)
     .map((segment) => segment.trim())
     .filter(Boolean).length;
+}
+
+function normalizeForAnchorMatch(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Build a whitelist of evidence tokens that generated text must reference.
+function buildEvidenceAnchors(analysis: AnalysisData): EvidenceAnchors {
+  const all = new Set<string>();
+  const strict = new Set<string>();
+
+  const usernameAnchor = normalizeForAnchorMatch(analysis.username);
+  all.add(usernameAnchor);
+  strict.add(usernameAnchor);
+  all.add(normalizeForAnchorMatch(String(analysis.repositoriesAnalyzed)));
+  all.add(normalizeForAnchorMatch(String(computeSystemScore(analysis))));
+  all.add(normalizeForAnchorMatch(String(analysis.totalStars)));
+  all.add(normalizeForAnchorMatch(String(analysis.followers)));
+
+  for (const metric of analysis.breakdown) {
+    const labelAnchor = normalizeForAnchorMatch(metric.label);
+    all.add(labelAnchor);
+    strict.add(labelAnchor);
+    all.add(normalizeForAnchorMatch(String(metric.value)));
+  }
+
+  for (const skill of analysis.skills) {
+    const labelAnchor = normalizeForAnchorMatch(skill.label);
+    all.add(labelAnchor);
+    strict.add(labelAnchor);
+    all.add(normalizeForAnchorMatch(String(skill.value)));
+  }
+
+  for (const repository of analysis.repositories.slice(0, 6)) {
+    const repoAnchor = normalizeForAnchorMatch(repository.name);
+    all.add(repoAnchor);
+    strict.add(repoAnchor);
+    const repoLeaf = repository.name.split("/").pop();
+    if (repoLeaf) {
+      const leafAnchor = normalizeForAnchorMatch(repoLeaf);
+      all.add(leafAnchor);
+      strict.add(leafAnchor);
+    }
+
+    all.add(normalizeForAnchorMatch(String(repository.commits)));
+    all.add(normalizeForAnchorMatch(String(repository.quality)));
+
+    for (const stackItem of repository.stack) {
+      all.add(normalizeForAnchorMatch(stackItem));
+    }
+  }
+
+  for (const finding of analysis.evidenceFindings ?? []) {
+    const claimAnchor = normalizeForAnchorMatch(finding.claim);
+    all.add(claimAnchor);
+    strict.add(claimAnchor);
+    for (const evidence of finding.evidence) {
+      all.add(normalizeForAnchorMatch(evidence));
+    }
+  }
+
+  for (const reason of analysis.scoreMeta?.scoreModel?.changeReasons ?? []) {
+    all.add(normalizeForAnchorMatch(reason));
+  }
+
+  all.delete("");
+  strict.delete("");
+  return { all, strict };
+}
+
+function textHasEvidenceAnchor(text: string, anchors: EvidenceAnchors): boolean {
+  const normalizedText = normalizeForAnchorMatch(text);
+
+  for (const anchor of anchors.strict) {
+    if (anchor.length < 3) {
+      continue;
+    }
+
+    if (normalizedText.includes(anchor)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function textHasHallucinationSignal(text: string, anchors: EvidenceAnchors): boolean {
+  if (SPECULATIVE_PATTERN.test(text) || SOFT_INTERVIEWER_PATTERN.test(text)) {
+    return true;
+  }
+
+  const strongClaimPattern =
+    /\b(production grade|enterprise scale|millions of users|distributed system|microservices|event driven|kafka|high throughput)\b/i;
+
+  if (strongClaimPattern.test(text) && !textHasEvidenceAnchor(text, anchors)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isGroundedStatement(text: string, anchors: EvidenceAnchors): boolean {
+  return textHasEvidenceAnchor(text, anchors) && !textHasHallucinationSignal(text, anchors);
 }
 
 function buildDeterministicFallback(analysis: AnalysisData): AiQualitativeFeedback {
@@ -382,34 +436,37 @@ function buildDeterministicFallback(analysis: AnalysisData): AiQualitativeFeedba
   const weakestRepo = [...analysis.repositories].sort((a, b) => a.quality - b.quality)[0];
 
   return {
-    summary: `${analysis.username} shows inconsistent engineering maturity with elevated execution risk. Architecture quality is mixed: ${strongestMetric.label} is ${strongestMetric.value}/100 while ${weakestMetric.label} is ${weakestMetric.value}/100 and remains the main blocker. ${DEFAULT_SUMMARY}`,
+    summary: `${analysis.username} shows uneven engineering signals across analyzed repositories. ${strongestMetric.label} is ${strongestMetric.value}/100 while ${weakestMetric.label} is ${weakestMetric.value}/100, making ${weakestMetric.label.toLowerCase()} the primary improvement area. ${DEFAULT_SUMMARY}`,
     strengths: [
       `${strongestMetric.label} is the strongest measurable signal at ${strongestMetric.value}/100 across analyzed repositories.`,
-      `${analysis.repositoriesAnalyzed} repositories and ${analysis.totalStars} total stars provide a baseline evidence set instead of purely empty portfolio claims.`,
+      `${analysis.repositoriesAnalyzed} repositories and ${analysis.totalStars} total stars provide baseline evidence, with ${strongestMetric.label} currently the clearest measurable strength.`,
       `${analysis.repositories[0]?.name ?? "Top repository"} has the best repository-level quality and offers the clearest technical proof point in the set.`,
     ],
     weaknesses: [
-      `${weakestMetric.label} at ${weakestMetric.value}/100 indicates weak proof for production-grade execution and increases rejection risk.`,
-      `${weakestRepo?.name ?? "The weakest repository"} lacks robust engineering signals and raises maintainability risk under real delivery pressure.`,
-      "CI/CD, test coverage, deployment quality, and observability evidence remain insufficiently demonstrated in the available portfolio data.",
+      `${weakestMetric.label} at ${weakestMetric.value}/100 is the weakest measured area in the current score breakdown.`,
+      `${weakestRepo?.name ?? "The weakest repository"} has the lowest repository quality signal in the analyzed set and needs stronger implementation evidence.`,
+      `${analysis.repositories[0]?.name ?? "Top repository"} and ${weakestRepo?.name ?? "the weakest repository"} contain limited explicit evidence for CI/CD, automated tests, deployment, and observability practices.`,
     ],
     suggestions: [
       `Prioritize ${weakestMetric.label}: publish architecture decisions, setup verification, and runtime tradeoffs for top repositories.`,
-      "Add automated quality gates (tests, coverage, CI pipeline, build checks) and expose results in repository documentation.",
-      "Provide deployment evidence (live environments, uptime/error metrics, release notes) so reviewers can verify behavior beyond code snapshots.",
+      `In ${analysis.repositories[0]?.name ?? "a top repository"}, add automated quality gates (tests, coverage, CI pipeline, build checks) and expose results in repository documentation.`,
+      `For ${weakestRepo?.name ?? "the weakest repository"}, provide deployment evidence (live environments, uptime/error metrics, release notes) so reviewers can verify behavior beyond code snapshots.`,
     ],
   };
 }
 
 export function buildDeterministicAiFeedback(analysis: AnalysisData): AiFeedback {
-  const flags = deriveScoringFlags(analysis);
-  const score = computeSystemScore(analysis);
-
   return {
     ...buildDeterministicFallback(analysis),
-    score,
-    confidence: computeConfidence(analysis, flags, score),
   };
+}
+
+function hasMinimumBulletCount(feedback: AiQualitativeFeedback): boolean {
+  return (
+    feedback.strengths.length >= 2 &&
+    feedback.weaknesses.length >= 2 &&
+    feedback.suggestions.length >= 2
+  );
 }
 
 function ensureFeedbackQuality(
@@ -418,16 +475,38 @@ function ensureFeedbackQuality(
 ): AiQualitativeFeedback {
   const fallback = buildDeterministicFallback(analysis);
   const sentenceCount = countSummarySentences(feedback.summary);
+  const anchors = buildEvidenceAnchors(analysis);
 
   if (sentenceCount < 2 || sentenceCount > 3) {
     return fallback;
   }
 
-  if (
-    feedback.strengths.length < 3 ||
-    feedback.weaknesses.length < 3 ||
-    feedback.suggestions.length < 3
-  ) {
+  if (!hasMinimumBulletCount(feedback)) {
+    return fallback;
+  }
+
+  const summarySentences = feedback.summary
+    .split(/[.!?]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const groundedSummarySentences = summarySentences.filter((sentence) =>
+    isGroundedStatement(sentence, anchors),
+  ).length;
+
+  if (groundedSummarySentences < Math.min(2, summarySentences.length)) {
+    return fallback;
+  }
+
+  const allBullets = [
+    ...feedback.strengths,
+    ...feedback.weaknesses,
+    ...feedback.suggestions,
+  ];
+  const hasUngroundedBullet = allBullets.some(
+    (bullet) => !isGroundedStatement(bullet, anchors),
+  );
+
+  if (hasUngroundedBullet) {
     return fallback;
   }
 
@@ -453,6 +532,54 @@ function parseAiFeedback(raw: string, baseline: AnalysisData): AiQualitativeFeed
   }
 }
 
+function buildAiPrompt(context: Record<string, unknown>): string {
+  return [
+    "You are a strict portfolio evidence summarizer.",
+    "System-first policy: deterministic scoring/signals are already computed by the engine.",
+    "Your job is explanation only. Do not invent signals or infer hidden skills.",
+    "Use ONLY facts present in the provided JSON context.",
+    "Never infer unseen systems, business impact, team scale, or production usage.",
+    "If evidence is missing, say evidence is missing.",
+    "Return STRICT JSON only with keys: summary, strengths, weaknesses, suggestions.",
+    "Do NOT return score or confidence. The system computes score and confidence deterministically.",
+    "summary requirements: exactly 2-3 sentences, critical, evidence-based, no motivational language.",
+    "strengths requirements: 2-4 concise bullets and each bullet must cite at least one concrete evidence anchor (repo name, metric label/value, skill label/value, commits, quality).",
+    "weaknesses requirements: 2-4 concise bullets and each bullet must cite at least one concrete evidence anchor (repo name, metric label/value, skill label/value, commits, quality).",
+    "suggestions requirements: 2-4 actionable bullets and each bullet must reference a concrete gap from the context.",
+    "Disallowed style: interviewer tone, speculation, praise adjectives, or hypothetical claims.",
+    "No markdown. No extra keys.",
+    "Portfolio context JSON:",
+    JSON.stringify(context),
+  ].join("\n");
+}
+
+function buildAiContext(analysis: AnalysisData, systemScore: number): Record<string, unknown> {
+  return {
+    username: analysis.username,
+    systemScore,
+    repositoriesAnalyzed: analysis.repositoriesAnalyzed,
+    breakdown: analysis.breakdown.map((metric) => ({
+      label: metric.label,
+      value: metric.value,
+      note: metric.note,
+    })),
+    skills: analysis.skills.map((skill) => ({
+      label: skill.label,
+      value: skill.value,
+    })),
+    repositories: analysis.repositories.slice(0, 6).map((repository) => ({
+      name: repository.name,
+      stack: repository.stack,
+      commits: repository.commits,
+      quality: repository.quality,
+      readme: repository.readme,
+    })),
+    developerSignals: analysis.developerSignals,
+    evidenceFindings: analysis.evidenceFindings,
+    scoreModel: analysis.scoreMeta?.scoreModel,
+  };
+}
+
 export async function generateAiFeedback(
   analysis: AnalysisData,
   apiKey: string,
@@ -460,43 +587,10 @@ export async function generateAiFeedback(
   const ai = new GoogleGenAI({ apiKey });
   const model = process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
 
-  const flags = deriveScoringFlags(analysis);
   const systemScore = computeSystemScore(analysis);
 
-  const context = {
-    username: analysis.username,
-    baselineScore: analysis.score,
-    systemScore,
-    followers: analysis.followers,
-    totalStars: analysis.totalStars,
-    repositoriesAnalyzed: analysis.repositoriesAnalyzed,
-    breakdown: analysis.breakdown,
-    skills: analysis.skills,
-    flags,
-    repositories: analysis.repositories.slice(0, 6).map((repository) => ({
-      name: repository.name,
-      stack: repository.stack,
-      stars: repository.stars,
-      commits: repository.commits,
-      quality: repository.quality,
-      readme: repository.readme,
-      recommendation: repository.recommendation,
-      note: repository.note,
-    })),
-  };
-
-  const prompt = [
-    "You are a staff-level software engineer and hiring interviewer evaluating a candidate's public GitHub portfolio.",
-    "Return STRICT JSON only with keys: summary, strengths, weaknesses, suggestions.",
-    "Do NOT return score or confidence. The system computes score and confidence deterministically.",
-    "summary requirements: 2-3 sentences, direct, critical, evidence-based.",
-    "strengths requirements: 3-5 concise bullets with concrete technical signals.",
-    "weaknesses requirements: 3-5 concise bullets, critical and specific.",
-    "suggestions requirements: 3-5 actionable technical improvements.",
-    "No markdown. No extra keys. No motivational tone.",
-    "Portfolio context JSON:",
-    JSON.stringify(context),
-  ].join("\n");
+  const context = buildAiContext(analysis, systemScore);
+  const prompt = buildAiPrompt(context);
 
   let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
 
@@ -527,7 +621,5 @@ export async function generateAiFeedback(
 
   return {
     ...qualitative,
-    score: systemScore,
-    confidence: computeConfidence(analysis, flags, systemScore),
   };
 }

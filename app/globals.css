@@ -41,6 +41,7 @@ html {
 body {
   min-height: 100vh;
   margin: 0;
+  overflow-x: hidden;
   background:
     radial-gradient(circle at top, rgba(141, 200, 176, 0.08), transparent 32%),
     linear-gradient(180deg, #060a0f 0%, #05080d 100%);
@@ -82,7 +83,6 @@ img {
 .gitinsight-app {
   position: relative;
   min-height: 100vh;
-  overflow: hidden;
   color: var(--foreground);
 }
 

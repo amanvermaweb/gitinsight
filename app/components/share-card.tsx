@@ -47,19 +47,15 @@ export function GitInsightShareCard({ username }: ShareCardProps) {
     }
 
     const shareUrl = `${window.location.origin}/analyze/${encodeURIComponent(analysis.username)}/share`;
-    const shareText = `GitInsight Score: ${analysis.score}/100\n${analysis.benchmarkDelta}\nArchetype: ${analysis.scoreMeta?.archetype ?? "Quality-Focused Builder"}`;
-
     setSharing(true);
 
     try {
       if (navigator.share) {
         await navigator.share({
-          title: `GitInsight for @${analysis.username}`,
-          text: shareText,
           url: shareUrl,
         });
       } else {
-        await navigator.clipboard.writeText(`${shareText}\n${shareUrl}`);
+        await navigator.clipboard.writeText(shareUrl);
       }
     } finally {
       setSharing(false);

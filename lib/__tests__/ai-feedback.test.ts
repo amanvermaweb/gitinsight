@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDeterministicAiFeedback,
-  computeConfidence,
   computeSystemScore,
   deriveScoringFlags,
 } from "@/lib/ai-feedback";
@@ -80,16 +79,15 @@ function createAnalysisFixture(): AnalysisData {
 }
 
 describe("ai-feedback deterministic behavior", () => {
-  it("builds deterministic feedback with computed score and confidence", () => {
+  it("builds deterministic qualitative feedback only", () => {
     const analysis = createAnalysisFixture();
     const flags = deriveScoringFlags(analysis);
-    const expectedScore = computeSystemScore(analysis);
-    const expectedConfidence = computeConfidence(analysis, flags, expectedScore);
 
     const feedback = buildDeterministicAiFeedback(analysis);
 
-    expect(feedback.score).toBe(expectedScore);
-    expect(feedback.confidence).toBe(expectedConfidence);
+    expect(flags.hasBackend).toBe(true);
+    expect("score" in feedback).toBe(false);
+    expect("confidence" in feedback).toBe(false);
     expect(feedback.strengths.length).toBeGreaterThanOrEqual(3);
     expect(feedback.weaknesses.length).toBeGreaterThanOrEqual(3);
     expect(feedback.suggestions.length).toBeGreaterThanOrEqual(3);
@@ -101,5 +99,47 @@ describe("ai-feedback deterministic behavior", () => {
 
     expect(score).toBeGreaterThanOrEqual(0);
     expect(score).toBeLessThanOrEqual(100);
+  });
+
+  it("keeps deterministic feedback evidence-grounded", () => {
+    const analysis = createAnalysisFixture();
+    const feedback = buildDeterministicAiFeedback(analysis);
+
+    const anchors = [
+      analysis.username.toLowerCase(),
+      ...analysis.breakdown.map((metric) => metric.label.toLowerCase()),
+      ...analysis.skills.map((skill) => skill.label.toLowerCase()),
+      ...analysis.repositories.map((repository) => repository.name.toLowerCase()),
+      ...analysis.repositories.map((repository) => repository.name.split("/").pop()?.toLowerCase() ?? ""),
+    ].filter((anchor) => anchor.length > 0);
+
+    const isAnchored = (text: string) => {
+      const lower = text.toLowerCase();
+      return anchors.some((anchor) => lower.includes(anchor));
+    };
+
+    const summarySentences = feedback.summary
+      .split(/[.!?]+/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean);
+
+    expect(summarySentences.filter(isAnchored).length).toBeGreaterThanOrEqual(2);
+
+    for (const bullet of [...feedback.strengths, ...feedback.weaknesses, ...feedback.suggestions]) {
+      expect(isAnchored(bullet)).toBe(true);
+    }
+  });
+
+  it("avoids speculative language in deterministic feedback", () => {
+    const analysis = createAnalysisFixture();
+    const feedback = buildDeterministicAiFeedback(analysis);
+    const speculativePattern =
+      /\b(maybe|might|probably|likely|possibly|guess|assume|appears|seems|feels like|could be)\b/i;
+
+    expect(feedback.summary).not.toMatch(speculativePattern);
+
+    for (const bullet of [...feedback.strengths, ...feedback.weaknesses, ...feedback.suggestions]) {
+      expect(bullet).not.toMatch(speculativePattern);
+    }
   });
 });

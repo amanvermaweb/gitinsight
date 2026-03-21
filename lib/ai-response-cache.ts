@@ -32,18 +32,18 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
   return value;
 }
 
-function getCacheTtlMs() {
+function getCacheTtlMs(): number {
   return parsePositiveIntegerEnv("ANALYZE_AI_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS);
 }
 
-function getCacheMaxEntries() {
+function getCacheMaxEntries(): number {
   return parsePositiveIntegerEnv(
     "ANALYZE_AI_CACHE_MAX_ENTRIES",
     DEFAULT_CACHE_MAX_ENTRIES,
   );
 }
 
-function buildAnalysisFingerprint(analysis: AnalysisData) {
+function buildAnalysisFingerprint(analysis: AnalysisData): string {
   const payload = {
     score: analysis.score,
     repositoriesAnalyzed: analysis.repositoriesAnalyzed,
@@ -67,7 +67,7 @@ function buildAnalysisFingerprint(analysis: AnalysisData) {
     .slice(0, 24);
 }
 
-function normalizeCacheKey(username: string, analysis: AnalysisData) {
+function normalizeCacheKey(username: string, analysis: AnalysisData): string {
   const normalized = username.trim().toLowerCase();
   const promptVersion = process.env.ANALYZE_AI_PROMPT_VERSION?.trim() || DEFAULT_AI_PROMPT_VERSION;
 
@@ -78,11 +78,11 @@ function normalizeCacheKey(username: string, analysis: AnalysisData) {
   return `${promptVersion}:${normalized}:${buildAnalysisFingerprint(analysis)}`;
 }
 
-function getRedisCacheKey(username: string) {
+function getRedisCacheKey(username: string): string {
   return `${REDIS_CACHE_PREFIX}${username}`;
 }
 
-function pruneOldestEntries(maxEntries: number) {
+function pruneOldestEntries(maxEntries: number): void {
   while (inMemoryCache.size >= maxEntries) {
     const oldestKey = inMemoryCache.keys().next().value;
 
@@ -103,29 +103,22 @@ function isAiFeedback(value: unknown): value is AiFeedback {
   const strengths = payload.strengths;
   const weaknesses = payload.weaknesses;
   const suggestions = payload.suggestions;
-  const score = payload.score;
-  const confidence = payload.confidence;
 
-  const hasStringItems = (items: unknown) =>
+  const hasNonEmptyStringArray = (items: unknown): boolean =>
     Array.isArray(items) &&
-    items.length >= 3 &&
-    items.length <= 5 &&
+    items.length >= 2 &&
+    items.length <= 4 &&
     items.every((item) => typeof item === "string" && item.trim().length > 0);
-
-  const isBoundedNumber = (entry: unknown, min: number, max: number) =>
-    typeof entry === "number" && Number.isFinite(entry) && entry >= min && entry <= max;
 
   return (
     typeof payload.summary === "string" &&
-    hasStringItems(strengths) &&
-    hasStringItems(weaknesses) &&
-    hasStringItems(suggestions) &&
-    isBoundedNumber(score, 0, 100) &&
-    isBoundedNumber(confidence, 0, 1)
+    hasNonEmptyStringArray(strengths) &&
+    hasNonEmptyStringArray(weaknesses) &&
+    hasNonEmptyStringArray(suggestions)
   );
 }
 
-function pruneExpiredEntries(now: number) {
+function pruneExpiredEntries(now: number): void {
   cacheReadsSincePrune += 1;
 
   if (cacheReadsSincePrune < 250 && inMemoryCache.size < 2_000) {
@@ -174,6 +167,7 @@ export async function getCachedAiFeedback(
 
       return isAiFeedback(parsed) ? parsed : null;
     } catch {
+      // Fall back to local memory cache if Redis is unavailable.
     }
   }
 
@@ -198,7 +192,7 @@ export async function setCachedAiFeedback(
   username: string,
   value: AiFeedback,
   analysis: AnalysisData,
-) {
+): Promise<void> {
   const key = normalizeCacheKey(username, analysis);
 
   if (!key) {
@@ -223,6 +217,7 @@ export async function setCachedAiFeedback(
       ]);
       return;
     } catch {
+      // Fall back to local memory cache if Redis write fails.
     }
   }
 

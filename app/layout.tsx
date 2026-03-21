@@ -32,6 +32,11 @@ export const metadata: Metadata = {
   title: "GitInsight | AI GitHub Portfolio Analyzer",
   description:
     "Premium AI-powered GitHub portfolio analysis for repository quality, skills, and developer signal.",
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

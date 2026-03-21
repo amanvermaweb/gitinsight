@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   __resetInMemoryScoreboardForTests,
   buildScoreNarratives,
+  computeEngineeringScore,
   computeGitInsightScore,
+  resolveEngineeringWeights,
+  explainEngineeringScoreChange,
   upsertScorePercentile,
 } from "@/lib/gitinsight-score";
 
@@ -60,5 +63,70 @@ describe("gitinsight-score", () => {
     expect(charlie.totalProfiles).toBe(3);
     expect(charlie.topPercent).toBeGreaterThan(0);
     expect(charlie.topPercent).toBeLessThanOrEqual(100);
+  });
+
+  it("computes explainable engineering score components with fixed weights", () => {
+    const result = computeEngineeringScore({
+      depth: 72,
+      systemDesign: 64,
+      execution: 58,
+      consistency: 70,
+      impact: 45,
+    });
+
+    expect(result.finalScore).toBeGreaterThan(0);
+    expect(result.finalScore).toBeLessThanOrEqual(100);
+    expect(result.weights.depth).toBe(0.3);
+    expect(result.weights.systemDesign).toBe(0.25);
+    expect(result.weights.execution).toBe(0.2);
+    expect(result.weights.consistency).toBe(0.15);
+    expect(result.weights.impact).toBe(0.1);
+  });
+
+  it("explains why the engineering score changed", () => {
+    const previous = computeEngineeringScore({
+      depth: 55,
+      systemDesign: 50,
+      execution: 47,
+      consistency: 63,
+      impact: 40,
+    });
+    const current = computeEngineeringScore({
+      depth: 69,
+      systemDesign: 64,
+      execution: 58,
+      consistency: 65,
+      impact: 42,
+    });
+
+    const change = explainEngineeringScoreChange(
+      previous.finalScore,
+      current.finalScore,
+      previous.components,
+      current.components,
+    );
+
+    expect(change.reasons.length).toBeGreaterThan(0);
+    expect(typeof change.scoreDelta).toBe("number");
+  });
+
+  it("resolves project-type-aware weights with low-level language boost", () => {
+    const baseSystemWeights = resolveEngineeringWeights("system-software", {
+      lowLevelLanguageShare: 0,
+    });
+    const boostedSystemWeights = resolveEngineeringWeights("system-software", {
+      lowLevelLanguageShare: 0.8,
+    });
+
+    expect(boostedSystemWeights.systemDesign).toBeGreaterThan(
+      baseSystemWeights.systemDesign,
+    );
+    const total =
+      boostedSystemWeights.depth +
+      boostedSystemWeights.systemDesign +
+      boostedSystemWeights.execution +
+      boostedSystemWeights.consistency +
+      boostedSystemWeights.impact;
+    expect(Math.abs(total - 1)).toBeLessThan(0.0001);
   });
 });

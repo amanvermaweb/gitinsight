@@ -11,6 +11,8 @@ const COOLDOWN_MS = 5_000;
 const COOLDOWN_BUCKET_MAX_ENTRIES = 10_000;
 const MINUTE_WINDOW_MS = 60_000;
 const DAY_WINDOW_MS = 86_400_000;
+const PRUNE_CHECK_INTERVAL = 250;
+const PRUNE_MIN_BUCKETS = 2_000;
 
 const RATE_LIMIT_ERROR_MESSAGE =
   "Rate limit exceeded. Please try again later.";
@@ -51,10 +53,13 @@ function parsePositiveIntegerEnv(name: string, fallback: number): number {
   return value;
 }
 
-function pruneExpiredCooldowns(now: number, cooldownMs: number) {
+function pruneExpiredCooldowns(now: number, cooldownMs: number): void {
   cooldownChecksSincePrune += 1;
 
-  if (cooldownChecksSincePrune < 250 && cooldownBuckets.size < 2_000) {
+  if (
+    cooldownChecksSincePrune < PRUNE_CHECK_INTERVAL &&
+    cooldownBuckets.size < PRUNE_MIN_BUCKETS
+  ) {
     return;
   }
 
@@ -67,7 +72,7 @@ function pruneExpiredCooldowns(now: number, cooldownMs: number) {
   }
 }
 
-function pruneOldestCooldownEntries(maxEntries: number) {
+function pruneOldestCooldownEntries(maxEntries: number): void {
   while (cooldownBuckets.size >= maxEntries) {
     const oldestKey = cooldownBuckets.keys().next().value;
 
@@ -108,7 +113,7 @@ function getCooldownStatus(key: string, cooldownMs: number): CooldownStatus {
   };
 }
 
-function recordRequestForCooldown(key: string) {
+function recordRequestForCooldown(key: string): void {
   pruneOldestCooldownEntries(getCooldownBucketMaxEntries());
 
   cooldownBuckets.set(key, {
@@ -130,26 +135,26 @@ function buildRateLimitHeaders(
   return headers;
 }
 
-function getPerMinuteLimit() {
+function getPerMinuteLimit(): number {
   return parsePositiveIntegerEnv("ANALYZE_RATE_LIMIT_PER_MINUTE", MINUTE_LIMIT);
 }
 
-function getPerDayLimit() {
+function getPerDayLimit(): number {
   return parsePositiveIntegerEnv("ANALYZE_RATE_LIMIT_PER_DAY", DAY_LIMIT);
 }
 
-function getCooldownMs() {
+function getCooldownMs(): number {
   return parsePositiveIntegerEnv("ANALYZE_COOLDOWN_MS", COOLDOWN_MS);
 }
 
-function getCooldownBucketMaxEntries() {
+function getCooldownBucketMaxEntries(): number {
   return parsePositiveIntegerEnv(
     "ANALYZE_COOLDOWN_MAX_ENTRIES",
     COOLDOWN_BUCKET_MAX_ENTRIES,
   );
 }
 
-function toPositiveNumber(value: unknown, fallback: number) {
+function toPositiveNumber(value: unknown, fallback: number): number {
   const numericValue = Number(value);
 
   if (!Number.isFinite(numericValue) || numericValue < 0) {
@@ -159,7 +164,7 @@ function toPositiveNumber(value: unknown, fallback: number) {
   return numericValue;
 }
 
-function computeRetryAfterSeconds(now: number, windowMs: number) {
+function computeRetryAfterSeconds(now: number, windowMs: number): number {
   const resetAt = Math.floor(now / windowMs) * windowMs + windowMs;
   return Math.max(1, Math.ceil((resetAt - now) / 1000));
 }

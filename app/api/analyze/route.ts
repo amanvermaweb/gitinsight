@@ -11,10 +11,7 @@ import {
   getAnalyzeRequestClientIp,
 } from "@/lib/analyze-request-protection";
 import { jsonError, jsonSuccess } from "@/lib/api-response";
-import {
-  buildScoreNarratives,
-  upsertScorePercentile,
-} from "@/lib/gitinsight-score";
+import { upsertScorePercentile } from "@/lib/gitinsight-score";
 import { buildLiveAnalysis, GitHubRequestError } from "@/lib/live-analysis";
 import type { AnalysisData } from "@/lib/types";
 import { isValidGitHubUsername, normalizeUsername } from "@/lib/utils";
@@ -23,8 +20,18 @@ type AnalyzeRequestBody = {
   username?: string;
 };
 
-function benchmarkLabel(topPercent: number) {
-  return `Top ${topPercent}% among analyzed GitInsight profiles`;
+const MIN_BENCHMARK_PROFILES = 5;
+
+function benchmarkLabel(topPercent: number, totalProfiles: number) {
+  if (totalProfiles < MIN_BENCHMARK_PROFILES) {
+    if (totalProfiles <= 0) {
+      return "Benchmark pending: no analyzed profiles yet.";
+    }
+
+    return `Benchmark warming up: ${totalProfiles} analyzed profile${totalProfiles === 1 ? "" : "s"} so far.`;
+  }
+
+  return `Top ${topPercent}% among ${totalProfiles} analyzed GitInsight profiles`;
 }
 
 export async function GET(request: NextRequest) {
@@ -56,39 +63,38 @@ export async function GET(request: NextRequest) {
   );
 }
 
-function getComponentScore(analysis: AnalysisData, label: string) {
-  return analysis.breakdown.find((entry) => entry.label.toLowerCase() === label.toLowerCase())
-    ?.value ?? 0;
-}
-
 function applyAiFeedback(analysis: AnalysisData, feedback: AiFeedback) {
   analysis.summary = feedback.summary;
   analysis.strengths = feedback.strengths;
   analysis.weaknesses = feedback.weaknesses;
   analysis.suggestions = feedback.suggestions;
-  analysis.score = feedback.score;
-  analysis.confidence = feedback.confidence;
 }
 
 function enrichFeedbackWithScoreNarratives(analysis: AnalysisData) {
-  const narratives = buildScoreNarratives({
-    activity: getComponentScore(analysis, "Activity"),
-    consistency: getComponentScore(analysis, "Consistency"),
-    quality: getComponentScore(analysis, "Code quality proxy"),
-    impact: getComponentScore(analysis, "Impact"),
-    breadth: getComponentScore(analysis, "Tech breadth"),
-  });
+  const sorted = [...analysis.breakdown].sort((first, second) => second.value - first.value);
+  const strongest = sorted[0];
+  const weakest = sorted[sorted.length - 1];
+
+  const strengthLine = strongest
+    ? `Strength: ${strongest.label} is strongest at ${strongest.value}/100`
+    : "Strength: Stable engineering signal detected";
+  const weaknessLine = weakest
+    ? `Weakness: ${weakest.label} is the lowest signal at ${weakest.value}/100`
+    : "Weakness: Evidence is still sparse";
+  const coaching = weakest
+    ? `Raise ${weakest.label.toLowerCase()} first; it is the fastest lever to move the total score.`
+    : "Increase evidence density across repos to improve confidence and score.";
 
   if (!analysis.strengths.some((item) => item.startsWith("Strength:"))) {
-    analysis.strengths = [narratives.strengthLine, ...analysis.strengths].slice(0, 5);
+    analysis.strengths = [strengthLine, ...analysis.strengths].slice(0, 5);
   }
 
   if (!analysis.weaknesses.some((item) => item.startsWith("Weakness:"))) {
-    analysis.weaknesses = [narratives.weaknessLine, ...analysis.weaknesses].slice(0, 5);
+    analysis.weaknesses = [weaknessLine, ...analysis.weaknesses].slice(0, 5);
   }
 
-  if (!analysis.suggestions.some((item) => item === narratives.coaching)) {
-    analysis.suggestions = [narratives.coaching, ...analysis.suggestions].slice(0, 5);
+  if (!analysis.suggestions.some((item) => item === coaching)) {
+    analysis.suggestions = [coaching, ...analysis.suggestions].slice(0, 5);
   }
 
   analysis.weaknesses = analysis.weaknesses.map((item) =>
@@ -174,21 +180,23 @@ export async function POST(request: NextRequest) {
 
     try {
       const percentile = await upsertScorePercentile(analysis.username, analysis.score);
-      analysis.benchmarkDelta = benchmarkLabel(percentile.topPercent);
+      analysis.benchmarkDelta = benchmarkLabel(percentile.topPercent, percentile.totalProfiles);
       analysis.scoreMeta = {
         ...analysis.scoreMeta,
         archetype: analysis.scoreMeta?.archetype ?? "Quality-Focused Builder",
         averageDeveloperScore: analysis.scoreMeta?.averageDeveloperScore ?? 56,
         topPercent: percentile.topPercent,
+        benchmarkProfiles: percentile.totalProfiles,
         nextLevel: analysis.scoreMeta?.nextLevel,
       };
     } catch {
-      analysis.benchmarkDelta = benchmarkLabel(50);
+      analysis.benchmarkDelta = benchmarkLabel(50, 0);
       analysis.scoreMeta = {
         ...analysis.scoreMeta,
         archetype: analysis.scoreMeta?.archetype ?? "Quality-Focused Builder",
         averageDeveloperScore: analysis.scoreMeta?.averageDeveloperScore ?? 56,
         topPercent: analysis.scoreMeta?.topPercent ?? 50,
+        benchmarkProfiles: analysis.scoreMeta?.benchmarkProfiles ?? 0,
         nextLevel: analysis.scoreMeta?.nextLevel,
       };
     }

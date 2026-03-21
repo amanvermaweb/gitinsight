@@ -12,7 +12,6 @@ import {
   AppShell,
   GitInsightMark,
   Panel,
-  SurfaceLabel,
   ThemeToggle,
   usePersistedTheme,
 } from "./primitives";
@@ -76,7 +75,6 @@ export function GitInsightLanding() {
               <div className="space-y-8 text-center">
                 <div className="space-y-5">
                   <div className="flex justify-center">
-                    <SurfaceLabel>Developer portfolio intelligence</SurfaceLabel>
                   </div>
                   <div className="space-y-4">
                     <h1 className="mx-auto max-w-3xl text-5xl font-semibold leading-[0.92] tracking-[-0.07em] text-(--foreground) sm:text-6xl md:text-7xl">

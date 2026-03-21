@@ -59,8 +59,6 @@ const feedback: AiFeedback = {
   strengths: ["s1", "s2", "s3"],
   weaknesses: ["w1", "w2", "w3"],
   suggestions: ["x1", "x2", "x3"],
-  score: 73,
-  confidence: 0.7,
 };
 
 afterEach(() => {

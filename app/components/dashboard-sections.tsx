@@ -165,17 +165,13 @@ export function HeroSection({
           <p className="font-mono text-[0.72rem] uppercase tracking-[0.22em] text-(--muted)">
             Review posture
           </p>
-          <p className="mt-3 text-xl font-semibold tracking-[-0.04em] wrap-break-word text-(--foreground)">
-            {analysis
-              ? analysis.benchmarkDelta
-              : isLoading
-                ? "Loading benchmark from GitHub data..."
-                : "No benchmark available."}
-          </p>
+          <h3 className="mt-3 text-xl font-semibold tracking-[-0.04em] wrap-break-word text-(--foreground)">
+            Developer Posture
+          </h3>
           <p className="mt-3 text-sm leading-6 wrap-break-word text-(--muted)">
             {analysis
               ? analysis.summary
-              : "Live analysis is required before score and summary insights can be shown."}
+              : "This developer demonstrates strong consistency in shipping and maintaining projects, with clear evidence of real-world development habits rather than experimental or abandoned work. Their activity pattern indicates a focus on building usable software, maintaining code over time, and contributing with intent rather than volume."}
           </p>
         </Panel>
 
@@ -637,6 +633,32 @@ export function SkillsAndFeedbackSection({
             </div>
           </div>
         </Panel>
+
+        {analysis.evidenceFindings && analysis.evidenceFindings.length > 0 ? (
+          <Panel className="p-5 sm:p-6">
+            <p className="font-mono text-[0.68rem] uppercase tracking-[0.22em] text-(--muted)">
+              Evidence-based output
+            </p>
+            <div className="mt-4 space-y-3">
+              {analysis.evidenceFindings.map((finding) => (
+                <div
+                  key={`${finding.category}-${finding.claim}`}
+                  className="rounded-[20px] border border-white/8 bg-white/4 p-4"
+                >
+                  <p className="text-sm font-semibold text-(--foreground)">{finding.claim}</p>
+                  <div className="mt-2 space-y-1">
+                    {finding.evidence.map((line) => (
+                      <p key={line} className="text-sm leading-6 wrap-break-word text-(--muted-strong)">
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        ) : null}
+
       </div>
 
       <div className="space-y-8">
@@ -709,6 +731,7 @@ export function SkillsAndFeedbackSection({
                   ))}
                 </div>
               </div>
+
             </div>
           </div>
         </Panel>

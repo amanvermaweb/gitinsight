@@ -1,4 +1,5 @@
 import { isRedisRestConfigured, runRedisPipeline } from "@/lib/redis-rest";
+import type { ProjectType } from "@/lib/types";
 import { clamp } from "@/lib/utils";
 
 export type GitInsightScoreComponents = {
@@ -36,6 +37,124 @@ export type GitInsightPercentileResult = {
   topPercent: number;
   totalProfiles: number;
 };
+
+export type EngineeringScoreComponents = {
+  depth: number;
+  systemDesign: number;
+  execution: number;
+  consistency: number;
+  impact: number;
+};
+
+export type EngineeringScoreResult = {
+  finalScore: number;
+  components: EngineeringScoreComponents;
+  weights: EngineeringScoreComponents;
+};
+
+export type EngineeringWeightProfile = EngineeringScoreComponents;
+
+export const DOMAIN_ENGINEERING_SCORE_WEIGHTS: Record<
+  ProjectType,
+  EngineeringWeightProfile
+> = {
+  "web-app": {
+    depth: 0.27,
+    systemDesign: 0.29,
+    execution: 0.2,
+    consistency: 0.14,
+    impact: 0.1,
+  },
+  "backend-service": {
+    depth: 0.26,
+    systemDesign: 0.3,
+    execution: 0.22,
+    consistency: 0.13,
+    impact: 0.09,
+  },
+  library: {
+    depth: 0.32,
+    systemDesign: 0.27,
+    execution: 0.17,
+    consistency: 0.14,
+    impact: 0.1,
+  },
+  "system-software": {
+    depth: 0.26,
+    systemDesign: 0.35,
+    execution: 0.17,
+    consistency: 0.12,
+    impact: 0.1,
+  },
+  "cli-tool": {
+    depth: 0.3,
+    systemDesign: 0.24,
+    execution: 0.2,
+    consistency: 0.16,
+    impact: 0.1,
+  },
+  "ml-project": {
+    depth: 0.28,
+    systemDesign: 0.24,
+    execution: 0.18,
+    consistency: 0.15,
+    impact: 0.15,
+  },
+};
+
+export const ENGINEERING_SCORE_WEIGHTS: EngineeringScoreComponents = {
+  depth: 0.3,
+  systemDesign: 0.25,
+  execution: 0.2,
+  consistency: 0.15,
+  impact: 0.1,
+};
+
+export function resolveEngineeringWeights(
+  projectType: ProjectType,
+  options?: { lowLevelLanguageShare?: number },
+): EngineeringWeightProfile {
+  const base = DOMAIN_ENGINEERING_SCORE_WEIGHTS[projectType] ?? ENGINEERING_SCORE_WEIGHTS;
+
+  // System-heavy repositories in low-level languages get additional system-design weight.
+  if (projectType !== "system-software") {
+    return base;
+  }
+
+  const lowLevelLanguageShare = clamp(options?.lowLevelLanguageShare ?? 0, 0, 1);
+  const boost = clamp(lowLevelLanguageShare * 0.08, 0, 0.08);
+
+  if (boost <= 0) {
+    return base;
+  }
+
+  const adjusted = {
+    depth: clamp(base.depth - boost * 0.45, 0.15, 0.5),
+    systemDesign: clamp(base.systemDesign + boost, 0.15, 0.6),
+    execution: clamp(base.execution - boost * 0.2, 0.1, 0.4),
+    consistency: clamp(base.consistency - boost * 0.25, 0.08, 0.35),
+    impact: base.impact,
+  };
+
+  const total =
+    adjusted.depth +
+    adjusted.systemDesign +
+    adjusted.execution +
+    adjusted.consistency +
+    adjusted.impact;
+
+  if (total <= 0) {
+    return base;
+  }
+
+  return {
+    depth: adjusted.depth / total,
+    systemDesign: adjusted.systemDesign / total,
+    execution: adjusted.execution / total,
+    consistency: adjusted.consistency / total,
+    impact: adjusted.impact / total,
+  };
+}
 
 const SCOREBOARD_KEY = "analyze:scoreboard:v1";
 const inMemoryScoreboard = new Map<string, number>();
@@ -98,6 +217,70 @@ export function computeGitInsightScore(input: GitInsightScoreInput): GitInsightS
       impact: roundScore(impact),
       breadth: roundScore(breadth),
     },
+  };
+}
+
+export function computeEngineeringScore(
+  components: EngineeringScoreComponents,
+  weights: EngineeringWeightProfile = ENGINEERING_SCORE_WEIGHTS,
+): EngineeringScoreResult {
+  const bounded: EngineeringScoreComponents = {
+    depth: roundScore(components.depth),
+    systemDesign: roundScore(components.systemDesign),
+    execution: roundScore(components.execution),
+    consistency: roundScore(components.consistency),
+    impact: roundScore(components.impact),
+  };
+
+  const finalScore = roundScore(
+    bounded.depth * weights.depth +
+      bounded.systemDesign * weights.systemDesign +
+      bounded.execution * weights.execution +
+      bounded.consistency * weights.consistency +
+      bounded.impact * weights.impact,
+  );
+
+  return {
+    finalScore,
+    components: bounded,
+    weights,
+  };
+}
+
+export function explainEngineeringScoreChange(
+  previousScore: number,
+  currentScore: number,
+  previous: EngineeringScoreComponents,
+  current: EngineeringScoreComponents,
+) {
+  const scoreDelta = Math.round(currentScore - previousScore);
+  const componentDeltas = (Object.keys(current) as Array<keyof EngineeringScoreComponents>)
+    .map((key) => ({
+      key,
+      delta: Math.round(current[key] - previous[key]),
+    }))
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const reasons = componentDeltas
+    .filter((entry) => Math.abs(entry.delta) >= 3)
+    .slice(0, 3)
+    .map((entry) => {
+      const direction = entry.delta > 0 ? "increased" : "decreased";
+      const points = Math.abs(entry.delta);
+      const label =
+        entry.key === "systemDesign"
+          ? "System design"
+          : entry.key.charAt(0).toUpperCase() + entry.key.slice(1);
+      return `${label} ${direction} by ${points} points`;
+    });
+
+  if (reasons.length === 0) {
+    reasons.push("No material component change (all deltas < 3 points)");
+  }
+
+  return {
+    scoreDelta,
+    reasons,
   };
 }
 
