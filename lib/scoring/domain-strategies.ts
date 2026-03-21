@@ -467,6 +467,11 @@ export function resolveMetricScore(metric: DomainMetricResult, fallback = 50): n
     return clampScore(conservative - confidencePenalty);
   }
 
+  // Explicitly narrow for TypeScript before blending.
+  if (evidence === null || inferred === null) {
+    return clampScore(fallback - confidencePenalty);
+  }
+
   const evidenceWeight = clamp(0.68 + confidence * 0.2, 0.62, 0.9);
   const inferredWeight = 1 - evidenceWeight;
   const blended = evidence * evidenceWeight + inferred * inferredWeight;
