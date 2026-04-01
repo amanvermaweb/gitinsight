@@ -25,10 +25,6 @@ type GitHubUser = {
   public_repos: number;
 };
 
-type GitHubRepositorySearchResponse = {
-  items: GitHubRepo[];
-};
-
 type GitHubIssueSearchResponse = {
   total_count: number;
 };
@@ -108,7 +104,6 @@ type EnrichedRepository = {
 };
 
 const GITHUB_API_ROOT = "https://api.github.com";
-const TOP_REPOSITORY_SEARCH_LIMIT = 30;
 const DEFAULT_GITHUB_TIMEOUT_MS = 10_000;
 const DAYS_IN_SCORING_WINDOW = 90;
 const MAX_EVENT_PAGES = 3;
@@ -310,6 +305,112 @@ function parseGitHubErrorMessage(payload: unknown) {
 
 function normalizeRepoKey(repoName: string) {
   return repoName.toLowerCase();
+}
+
+async function requestAllOwnedRepositories(username: string, token: string) {
+  const ownedRepos: GitHubRepo[] = [];
+  const perPage = 100;
+
+  for (let page = 1; ; page += 1) {
+    const pageRepos = await requestGitHub<GitHubRepo[]>(
+      `/users/${encodeURIComponent(
+        username,
+      )}/repos?type=owner&sort=updated&direction=desc&per_page=${perPage}&page=${page}`,
+      token,
+    );
+
+    if (!Array.isArray(pageRepos) || pageRepos.length === 0) {
+      break;
+    }
+
+    ownedRepos.push(...pageRepos.filter((repo) => !repo.fork && !repo.archived));
+
+    if (pageRepos.length < perPage) {
+      break;
+    }
+  }
+
+  return ownedRepos;
+}
+
+function selectFeaturedRepositories(
+  repositories: GitHubRepo[],
+  recentCommitsByRepo: Map<string, number>,
+  limit: number,
+) {
+  if (repositories.length <= limit) {
+    return [...repositories];
+  }
+
+  const byPopularity = [...repositories].sort(
+    (first, second) =>
+      second.stargazers_count - first.stargazers_count ||
+      new Date(second.pushed_at).getTime() - new Date(first.pushed_at).getTime(),
+  );
+  const byLatest = [...repositories].sort(
+    (first, second) =>
+      new Date(second.pushed_at).getTime() - new Date(first.pushed_at).getTime() ||
+      second.stargazers_count - first.stargazers_count,
+  );
+  const byRecentCommitVolume = [...repositories].sort((first, second) => {
+    const firstRecent = recentCommitsByRepo.get(normalizeRepoKey(first.full_name)) ?? 0;
+    const secondRecent = recentCommitsByRepo.get(normalizeRepoKey(second.full_name)) ?? 0;
+
+    return (
+      secondRecent - firstRecent ||
+      second.stargazers_count - first.stargazers_count ||
+      new Date(second.pushed_at).getTime() - new Date(first.pushed_at).getTime()
+    );
+  });
+
+  const picked: GitHubRepo[] = [];
+  const seen = new Set<string>();
+  const pools = [byRecentCommitVolume, byPopularity, byLatest];
+  const target = Math.min(limit, repositories.length);
+
+  for (let index = 0; picked.length < target && index < target * pools.length; index += 1) {
+    const pool = pools[index % pools.length];
+    const next = pool.find((repo) => !seen.has(normalizeRepoKey(repo.full_name)));
+
+    if (!next) {
+      continue;
+    }
+
+    picked.push(next);
+    seen.add(normalizeRepoKey(next.full_name));
+  }
+
+  if (picked.length >= target) {
+    return picked;
+  }
+
+  const byBalancedSignal = [...repositories].sort((first, second) => {
+    const firstRecent = recentCommitsByRepo.get(normalizeRepoKey(first.full_name)) ?? 0;
+    const secondRecent = recentCommitsByRepo.get(normalizeRepoKey(second.full_name)) ?? 0;
+    const firstRecency = clamp(1 - daysSince(first.pushed_at) / 365, 0, 1);
+    const secondRecency = clamp(1 - daysSince(second.pushed_at) / 365, 0, 1);
+    const firstScore = first.stargazers_count * 0.5 + firstRecent * 0.3 + firstRecency * 100;
+    const secondScore =
+      second.stargazers_count * 0.5 + secondRecent * 0.3 + secondRecency * 100;
+
+    return secondScore - firstScore;
+  });
+
+  for (const repo of byBalancedSignal) {
+    if (picked.length >= target) {
+      break;
+    }
+
+    const key = normalizeRepoKey(repo.full_name);
+    if (seen.has(key)) {
+      continue;
+    }
+
+    picked.push(repo);
+    seen.add(key);
+  }
+
+  return picked;
 }
 
 function extractLastPageNumber(linkHeader: string | null) {
@@ -1180,18 +1281,8 @@ export async function buildLiveAnalysis(
   username: string,
   apiKey: string,
 ): Promise<AnalysisData> {
-  const repositorySearchQuery = encodeURIComponent(
-    `user:${username} fork:false archived:false`,
-  );
-
-  const [user, repositorySearch] = await Promise.all([
-    requestGitHub<GitHubUser>(`/users/${username}`, apiKey),
-    requestGitHub<GitHubRepositorySearchResponse>(
-      `/search/repositories?q=${repositorySearchQuery}&sort=stars&order=desc&per_page=${TOP_REPOSITORY_SEARCH_LIMIT}`,
-      apiKey,
-    ),
-  ]);
-  const repos = repositorySearch.items ?? [];
+  const user = await requestGitHub<GitHubUser>(`/users/${username}`, apiKey);
+  const ownedRepos = await requestAllOwnedRepositories(user.login, apiKey);
 
   const sinceDate = toDateFilter(DAYS_IN_SCORING_WINDOW);
   const [eventPage1, eventPage2, eventPage3, prSearch, issueSearch] = await Promise.all([
@@ -1225,15 +1316,7 @@ export async function buildLiveAnalysis(
     .slice(0, MAX_EVENT_PAGES)
     .flat();
 
-  const ownedRepos = repos.filter((repo) => !repo.fork);
-  const sortedRepos = [...ownedRepos].sort(
-    (first, second) =>
-      second.stargazers_count - first.stargazers_count ||
-      new Date(second.pushed_at).getTime() - new Date(first.pushed_at).getTime(),
-  );
-
-  const analyzedRepos = sortedRepos.slice(0, Math.min(12, sortedRepos.length || 1));
-  const featuredRepos = sortedRepos.slice(0, Math.min(6, sortedRepos.length || 1));
+  const analyzedRepos = [...ownedRepos];
   const monthlyWindow = buildRecentMonths(7);
   const monthlyMap = new Map(monthlyWindow.map((month) => [month.key, 0]));
   const pushEvents = (events ?? []).filter((event) => event.type === "PushEvent");
@@ -1264,6 +1347,37 @@ export async function buildLiveAnalysis(
       weeklyByRepo.set(repoKey, buckets);
     }
   }
+
+  const featuredRepos = selectFeaturedRepositories(
+    analyzedRepos,
+    recentCommitsByRepo,
+    6,
+  );
+  const topPopularityKeys = new Set(
+    [...analyzedRepos]
+      .sort((first, second) => second.stargazers_count - first.stargazers_count)
+      .slice(0, 6)
+      .map((repo) => normalizeRepoKey(repo.full_name)),
+  );
+  const topLatestKeys = new Set(
+    [...analyzedRepos]
+      .sort(
+        (first, second) =>
+          new Date(second.pushed_at).getTime() - new Date(first.pushed_at).getTime(),
+      )
+      .slice(0, 6)
+      .map((repo) => normalizeRepoKey(repo.full_name)),
+  );
+  const topRecentCommitKeys = new Set(
+    [...analyzedRepos]
+      .sort((first, second) => {
+        const firstRecent = recentCommitsByRepo.get(normalizeRepoKey(first.full_name)) ?? 0;
+        const secondRecent = recentCommitsByRepo.get(normalizeRepoKey(second.full_name)) ?? 0;
+        return secondRecent - firstRecent;
+      })
+      .slice(0, 6)
+      .map((repo) => normalizeRepoKey(repo.full_name)),
+  );
 
   const activityWindowStats = computeActivityWindowStats(events, user.login);
   const pullRequestCount = Math.max(0, prSearch?.total_count ?? 0);
@@ -1319,11 +1433,22 @@ export async function buildLiveAnalysis(
         Math.max(2, Math.round((value / weeklyMax) * 10) + 2),
       );
 
+      const selectionSignals: string[] = [];
+      if (topRecentCommitKeys.has(repoKey)) {
+        selectionSignals.push("recent commit volume");
+      }
+      if (topPopularityKeys.has(repoKey)) {
+        selectionSignals.push("popularity");
+      }
+      if (topLatestKeys.has(repoKey)) {
+        selectionSignals.push("latest activity");
+      }
+
       const note = repo.archived
         ? "Archived repository. Treat as historical signal rather than active velocity."
         : repo.stargazers_count > 120
-          ? "Strong external signal and sustained relevance in developer ecosystems."
-          : "Good implementation depth; visibility can improve with clearer positioning.";
+          ? `Strong external signal and sustained relevance in developer ecosystems${selectionSignals.length > 0 ? ` (${selectionSignals.join(", ")})` : ""}.`
+          : `Good implementation depth; visibility can improve with clearer positioning${selectionSignals.length > 0 ? ` (${selectionSignals.join(", ")})` : ""}.`;
 
       const enrichedRepo: EnrichedRepository = {
         name: repo.full_name,
@@ -1346,7 +1471,7 @@ export async function buildLiveAnalysis(
     }),
   );
 
-  const totalStars = sortedRepos.reduce((sum, repo) => sum + repo.stargazers_count, 0);
+  const totalStars = ownedRepos.reduce((sum, repo) => sum + repo.stargazers_count, 0);
 
   const readmeCoverage =
     enrichedRepos.filter((repo) => repo.hasReadme).length /
@@ -1550,7 +1675,7 @@ export async function buildLiveAnalysis(
     featureCommits,
   });
 
-  const totalForks = sortedRepos.reduce((sum, repo) => sum + repo.forks_count, 0);
+  const totalForks = ownedRepos.reduce((sum, repo) => sum + repo.forks_count, 0);
   const legacyImpactScore = Math.round(
     clamp(
       clamp(totalStars / 400, 0, 1) * 35 +
@@ -2017,7 +2142,8 @@ export async function buildLiveAnalysis(
     summary:
       `${user.login} scored ${score}/100 from a deterministic weighted model (${describeProjectType(projectTypeDetection.projectType)} profile: Depth ${roundToTenth(engineeringScore.weights.depth)}, System design ${roundToTenth(engineeringScore.weights.systemDesign)}, Execution ${roundToTenth(engineeringScore.weights.execution)}, Consistency ${roundToTenth(engineeringScore.weights.consistency)}, Impact ${roundToTenth(engineeringScore.weights.impact)}). Strongest signal: ${strongestMetric?.label ?? "Depth"}. Lowest signal: ${weakestMetric?.label ?? "Impact"}. ${domainInfo.domain_confidence < 0.5 ? "Domain classification is uncertain; treat inferred signals as directional." : "Domain classification confidence is stable."}`,
     highlights: [
-      `Analyzed ${analyzedRepos.length} top repositories and ${events.length} recent public events.`,
+      `Analyzed ${analyzedRepos.length} owned repositories and ${events.length} recent public events.`,
+      "Showcased repositories are selected from strongest signals across commit volume, popularity, and recency.",
       `Score change vs previous window: ${scoreChange.scoreDelta >= 0 ? "+" : ""}${scoreChange.scoreDelta}. ${scoreChange.reasons[0]}.`,
       domainInfo.is_multi_domain
         ? `Multi-domain profile: ${domainInfo.primary_domain} with secondary domains ${domainInfo.secondary_domains.join(", ")}.`

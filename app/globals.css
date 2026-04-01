@@ -58,11 +58,6 @@ body:has(.gitinsight-app[data-theme="light"]) {
     linear-gradient(180deg, #ede9e1 0%, #e5dfd6 100%);
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
 button,
 input,
 textarea,
@@ -86,7 +81,6 @@ img {
   color: var(--foreground);
 }
 
-/* Allow long dynamic tokens (usernames, repo names, URLs) to wrap safely. */
 .gitinsight-app :where(h1, h2, h3, p, li) {
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -287,11 +281,6 @@ img {
   opacity: 0.7;
 }
 
-.gi-skill-surface {
-  display: grid;
-  gap: 1rem;
-}
-
 .gi-skill-stage {
   position: relative;
   overflow: hidden;
@@ -339,11 +328,6 @@ img {
   border-radius: 20px;
   background: color-mix(in srgb, var(--panel-strong) 92%, transparent);
   padding: 0.75rem 0.9rem;
-}
-
-.gi-skill-cards {
-  display: grid;
-  gap: 0.8rem;
 }
 
 .gi-skill-card {
@@ -463,17 +447,6 @@ input::placeholder {
     inset: 10rem -12% auto auto;
     height: 16rem;
     width: 16rem;
-  }
-}
-
-@media (min-width: 1024px) {
-  .gi-skill-surface {
-    display: grid;
-    gap: 1rem;
-  }
-
-  .gi-skill-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

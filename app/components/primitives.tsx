@@ -6,6 +6,7 @@ import { THEME_STORAGE_KEY } from "@/lib/constants";
 import type { AnalysisData, ThemeMode } from "@/lib/types";
 import { clamp } from "@/lib/utils";
 import Image from "next/image";
+import Link from "next/link";
 
 function getSystemTheme(): ThemeMode {
   if (typeof window === "undefined") {
@@ -137,6 +138,9 @@ export function AppShell({
       <footer className="relative z-10 border-t border-white/10 px-4 py-4 sm:px-6 lg:px-8">
         <p className="mx-auto w-full max-w-370 text-center text-sm text-(--muted)">
           AI can make mistakes. Please verify important information.
+        </p>
+        <p className="mt-6 text-base text-center leading-7 text-muted">
+          Made with ❤️ by <Link href="https://github.com/amanvermaweb/" className="underline">Aman Verma</Link>
         </p>
       </footer>
     </div>

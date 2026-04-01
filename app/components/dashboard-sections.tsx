@@ -112,8 +112,8 @@ export function HeroSection({
           </h1>
           <p className="mt-5 max-w-2xl text-base leading-8 text-(--muted-strong) sm:text-lg">
             Repository quality, shipping behavior, documentation maturity, and
-            skill confidence are all separated into a dedicated result
-            workspace rather than compressed into the landing screen.
+            skill confidence are all separated into a dedicated result workspace
+            rather than compressed into the landing screen.
           </p>
 
           <form onSubmit={onSubmit} className="mt-8 grid gap-4">
@@ -184,13 +184,16 @@ export function HeroSection({
               {analysis.highlights.map((highlight) => (
                 <div key={highlight} className="flex items-start gap-3">
                   <span className="mt-1 h-2.5 w-2.5 rounded-full bg-(--accent-strong)" />
-                  <p className="text-sm leading-6 wrap-break-word text-(--muted-strong)">{highlight}</p>
+                  <p className="text-sm leading-6 wrap-break-word text-(--muted-strong)">
+                    {highlight}
+                  </p>
                 </div>
               ))}
             </div>
           ) : (
             <p className="mt-4 text-sm leading-6 text-(--muted)">
-              No signal highlights are shown until live GitHub analysis succeeds.
+              No signal highlights are shown until live GitHub analysis
+              succeeds.
             </p>
           )}
         </Panel>
@@ -217,7 +220,8 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
   };
 
   const firstActivityValue = analysis.activity[0]?.value ?? 0;
-  const lastActivityValue = analysis.activity[analysis.activity.length - 1]?.value ?? 0;
+  const lastActivityValue =
+    analysis.activity[analysis.activity.length - 1]?.value ?? 0;
   const activityDelta = lastActivityValue - firstActivityValue;
   const activityHeadline =
     activityDelta >= 8
@@ -262,7 +266,8 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
                   @{analysis.username}
                 </h3>
                 <p className="mt-2 text-sm font-medium tracking-[0.02em] text-(--accent-strong)">
-                  Archetype: {analysis.scoreMeta?.archetype ?? "Quality-Focused Builder"}
+                  Archetype:{" "}
+                  {analysis.scoreMeta?.archetype ?? "Quality-Focused Builder"}
                 </p>
                 <p className="mt-2 max-w-xl text-sm leading-6 wrap-break-word text-(--muted-strong)">
                   {analysis.headline}
@@ -321,12 +326,16 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
               <div>
                 <div className="mb-2 flex items-center justify-between text-sm text-(--muted-strong)">
                   <span>Average developer</span>
-                  <span>{analysis.scoreMeta?.averageDeveloperScore ?? 56}/100</span>
+                  <span>
+                    {analysis.scoreMeta?.averageDeveloperScore ?? 56}/100
+                  </span>
                 </div>
                 <div className="h-2 rounded-full bg-white/8">
                   <div
                     className="h-full rounded-full bg-white/35"
-                    style={{ width: `${analysis.scoreMeta?.averageDeveloperScore ?? 56}%` }}
+                    style={{
+                      width: `${analysis.scoreMeta?.averageDeveloperScore ?? 56}%`,
+                    }}
                   />
                 </div>
               </div>
@@ -361,8 +370,12 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
                   className="rounded-[22px] border border-white/8 bg-(--panel-strong) p-4"
                 >
                   <div className="flex min-w-0 items-center justify-between gap-4">
-                    <p className="min-w-0 flex-1 text-sm font-medium wrap-break-word text-(--foreground)">{metric.label}</p>
-                    <p className="shrink-0 font-mono text-sm text-(--foreground)">{metric.value}</p>
+                    <p className="min-w-0 flex-1 text-sm font-medium wrap-break-word text-(--foreground)">
+                      {metric.label}
+                    </p>
+                    <p className="shrink-0 font-mono text-sm text-(--foreground)">
+                      {metric.value}
+                    </p>
                   </div>
                   <div className="mt-3 h-2 rounded-full bg-white/6">
                     <motion.div
@@ -375,7 +388,9 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
                       className="h-full rounded-full bg-[linear-gradient(90deg,var(--accent-strong),var(--warm))]"
                     />
                   </div>
-                  <p className="mt-3 text-sm leading-6 wrap-break-word text-(--muted)">{metric.note}</p>
+                  <p className="mt-3 text-sm leading-6 wrap-break-word text-(--muted)">
+                    {metric.note}
+                  </p>
                 </div>
               ))}
             </div>
@@ -401,7 +416,10 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
 
           <div className="mt-8 grid grid-cols-7 gap-3">
             {analysis.activity.map((entry) => (
-              <div key={entry.label} className="flex flex-col items-center gap-3">
+              <div
+                key={entry.label}
+                className="flex flex-col items-center gap-3"
+              >
                 <div className="flex h-44 w-full items-end rounded-3xl border border-white/8 bg-(--panel-strong) p-2">
                   <motion.div
                     initial={{ height: 0 }}
@@ -414,7 +432,9 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
                   <p className="font-mono text-xs uppercase tracking-[0.18em] text-(--muted)">
                     {entry.label}
                   </p>
-                  <p className="mt-1 text-sm text-(--foreground)">{entry.value}</p>
+                  <p className="mt-1 text-sm text-(--foreground)">
+                    {entry.value}
+                  </p>
                 </div>
               </div>
             ))}
@@ -429,12 +449,17 @@ export function OverviewSection({ analysis }: { analysis: AnalysisData }) {
             {analysis.breakdown.map((metric) => (
               <div key={metric.label} className="space-y-2">
                 <div className="flex min-w-0 items-center justify-between gap-4">
-                  <p className="min-w-0 flex-1 text-sm font-medium wrap-break-word text-(--foreground)">{metric.label}</p>
+                  <p className="min-w-0 flex-1 text-sm font-medium wrap-break-word text-(--foreground)">
+                    {metric.label}
+                  </p>
                   <p className="font-mono text-sm text-(--muted)">
-                    {describeMetricConfidence(metric.value)} confidence ({metric.value}/100)
+                    {describeMetricConfidence(metric.value)} confidence (
+                    {metric.value}/100)
                   </p>
                 </div>
-                <p className="text-sm leading-6 wrap-break-word text-(--muted)">{metric.note}</p>
+                <p className="text-sm leading-6 wrap-break-word text-(--muted)">
+                  {metric.note}
+                </p>
               </div>
             ))}
           </div>
@@ -554,7 +579,9 @@ export function RepositoryInsightsSection({
                           <div className="relative h-full w-full overflow-hidden rounded-full">
                             <div
                               className="absolute inset-0 rounded-full bg-[linear-gradient(180deg,var(--accent-strong),rgba(255,255,255,0.12))]"
-                              style={{ transform: `translateY(${translateY}%)` }}
+                              style={{
+                                transform: `translateY(${translateY}%)`,
+                              }}
                             />
                           </div>
                         </div>
@@ -626,10 +653,12 @@ export function SkillsAndFeedbackSection({
               Gain {starsGoal > 0 ? `${starsGoal}+` : "20+"} repo stars
             </div>
             <div className="rounded-[20px] border border-white/8 bg-white/4 p-4 text-sm text-(--muted-strong)">
-              Contribute to {externalGoal > 0 ? externalGoal : 3} open-source projects
+              Contribute to {externalGoal > 0 ? externalGoal : 3} open-source
+              projects
             </div>
             <div className="rounded-[20px] border border-white/8 bg-white/4 p-4 text-sm text-(--muted-strong)">
-              Increase activity by {commitGoal > 0 ? `${commitGoal}+` : "40+"} weighted commits
+              Increase activity by {commitGoal > 0 ? `${commitGoal}+` : "40+"}{" "}
+              weighted commits
             </div>
           </div>
         </Panel>
@@ -645,10 +674,15 @@ export function SkillsAndFeedbackSection({
                   key={`${finding.category}-${finding.claim}`}
                   className="rounded-[20px] border border-white/8 bg-white/4 p-4"
                 >
-                  <p className="text-sm font-semibold text-(--foreground)">{finding.claim}</p>
+                  <p className="text-sm font-semibold text-(--foreground)">
+                    {finding.claim}
+                  </p>
                   <div className="mt-2 space-y-1">
                     {finding.evidence.map((line) => (
-                      <p key={line} className="text-sm leading-6 wrap-break-word text-(--muted-strong)">
+                      <p
+                        key={line}
+                        className="text-sm leading-6 wrap-break-word text-(--muted-strong)"
+                      >
                         {line}
                       </p>
                     ))}
@@ -658,7 +692,6 @@ export function SkillsAndFeedbackSection({
             </div>
           </Panel>
         ) : null}
-
       </div>
 
       <div className="space-y-8">
@@ -731,11 +764,9 @@ export function SkillsAndFeedbackSection({
                   ))}
                 </div>
               </div>
-
             </div>
           </div>
         </Panel>
-
       </div>
     </section>
   );
